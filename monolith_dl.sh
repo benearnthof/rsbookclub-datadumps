@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # monolith_dl.sh
-# Phase 1: fetch torrent metadata only & inspect file list
-# Phase 2: download only files within MIN_YM..MAX_YM inclusive
+# Step 1: resolve torrent source: local .torrent file or magnet link
+# Step 2: select files within MIN_YM..MAX_YM inclusive
+# Step 3: download selected files
+# Step 4+5: filter submissions + comments in parallel
 #
 # Usage:
-#   ./monolith_dl.sh "<magnet_link>"
+#   ./monolith_dl.sh /path/to/file.torrent
+#   ./monolith_dl.sh "<magnet_link>"        # fallback — fetches metadata from peers
 #
 # Requirements:
 #   pip install torf
@@ -12,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MAGNET="${1:?Usage: $0 '<magnet_link>'}"
+INPUT="${1:?Usage: $0 '<path/to/file.torrent or magnet_link>'}"
 DOWNLOAD_DIR="/workspace/downloads"
 FILTERED_SUBS="/workspace/filtered/submissions"
 FILTERED_COMS="/workspace/filtered/comments"
@@ -28,28 +31,35 @@ log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
 }
 
-# ── Phase 1: fetch metadata ───────────────────────────────────────────────────
-log "Phase 1: fetching torrent metadata (no data downloaded)..."
-
-aria2c \
-    "${MAGNET}" \
-    --bt-metadata-only=true \
-    --bt-save-metadata=true \
-    --dir="${META_DIR}" \
-    --seed-time=0 \
-    --console-log-level=notice \
-    2>&1 | tee -a "$LOG_FILE"
-
-# aria2c saves the .torrent as <info-hash>.torrent
-TORRENT_FILE=$(find "${META_DIR}" -name "*.torrent" | head -1)
-if [ -z "$TORRENT_FILE" ]; then
-    log "ERROR: no .torrent file found in ${META_DIR}"
-    exit 1
+# ── Step 1: resolve torrent file ────────────────────────────────────────────
+if [[ "$INPUT" == magnet:* ]]; then
+    log "Step 1: magnet link detected — fetching metadata from peers..."
+    aria2c \
+        "${INPUT}" \
+        --bt-metadata-only=true \
+        --bt-save-metadata=true \
+        --dir="${META_DIR}" \
+        --seed-time=0 \
+        --console-log-level=notice \
+        2>&1 | tee -a "$LOG_FILE"
+    TORRENT_FILE=$(find "${META_DIR}" -name "*.torrent" | head -1)
+    if [ -z "$TORRENT_FILE" ]; then
+        log "ERROR: no .torrent file found in ${META_DIR}"
+        exit 1
+    fi
+    log "Metadata saved: ${TORRENT_FILE}"
+else
+    # Local .torrent file — use directly, no network needed
+    TORRENT_FILE="$(realpath "$INPUT")"
+    if [ ! -f "$TORRENT_FILE" ]; then
+        log "ERROR: file not found: ${TORRENT_FILE}"
+        exit 1
+    fi
+    log "Step 1: using local torrent file: ${TORRENT_FILE}"
 fi
-log "Metadata saved: ${TORRENT_FILE}"
 
-# ── Phase 2: parse file list and build --select-file indices ─────────────────
-log "Phase 2: parsing file list and selecting files ${MIN_YM}..${MAX_YM}..."
+# ── Step 2: parse file list and build --select-file indices ─────────────────
+log "Step 2: parsing file list and selecting files ${MIN_YM}..${MAX_YM}..."
 
 SELECT_INDICES=$(python3 - <<EOF
 import sys, re
@@ -90,11 +100,11 @@ fi
 COUNT=$(echo "$SELECT_INDICES" | tr ',' '\n' | wc -l)
 log "Selected ${COUNT} files — indices: ${SELECT_INDICES}"
 
-# ── Phase 3: download only selected files ────────────────────────────────────
-log "Phase 3: downloading ${COUNT} selected files..."
+# ── Step 3: download only selected files ────────────────────────────────────
+log "Step 3: downloading ${COUNT} selected files..."
 
 aria2c \
-    "${MAGNET}" \
+    "${TORRENT_FILE}" \
     --select-file="${SELECT_INDICES}" \
     --seed-time=0 \
     --dir="${DOWNLOAD_DIR}" \
@@ -104,7 +114,7 @@ aria2c \
 
 log "Download complete."
 
-# ── Phase 4 & 5: filter submissions and comments in parallel ─────────────────
+# ── Step 4 & 5: filter submissions and comments in parallel ─────────────────
 # Both dirs are independent — run concurrently so the faster one
 # (submissions) doesn't block behind comments.
 SUBS_DIR="${DOWNLOAD_DIR}/reddit/submissions"
@@ -130,7 +140,7 @@ log "Waiting for both filter jobs to complete..."
 wait
 log "Filtering complete."
 
-# ── Phase 6: cleanup ──────────────────────────────────────────────────────────
+# ── Step 6: cleanup ──────────────────────────────────────────────────────────
 log "Cleaning up..."
 find "${DOWNLOAD_DIR}/reddit" -type f \( -name "*.aria2" -o -name "*.torrent" \) -delete
 find "${DOWNLOAD_DIR}/reddit" -mindepth 1 -type d -empty -delete
