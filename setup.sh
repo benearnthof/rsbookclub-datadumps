@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh — install aria2c, zstd, and Python deps for worker.py
+# setup.sh — install aria2c, zstd, and Python deps for filter_worker.py
 # Tested on Ubuntu 20.04 / 22.04 with Python 3.8+
 
 set -euo pipefail
@@ -13,9 +13,11 @@ python3 -m pip install --upgrade pip
 
 python3 -m pip install \
     zstandard \
-    tqdm
+    tqdm \
+    torf
 
 aria2c  --version | head -1
 zstd    --version | head -1
 python3 -c "import zstandard; print(f'zstandard {zstandard.__version__}')"
 python3 -c "import tqdm; print(f'tqdm {tqdm.__version__}')"
+python3 -c "import torf; print(f'torf {torf.__version__}')"
