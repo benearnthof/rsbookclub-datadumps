@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 # monolith_dl.sh
-# Step 1: resolve torrent source: local .torrent file or magnet link
-# Step 2: select files within MIN_YM..MAX_YM inclusive
-# Step 3: download selected files
-# Step 4+5: filter submissions + comments in parallel
+# Selectively download, filter, and delete a pushshift monolith torrent
+# in configurable batches to cap peak disk usage.
 #
 # Usage:
-#   ./monolith_dl.sh /path/to/file.torrent
-#   ./monolith_dl.sh "<magnet_link>"        # fallback — fetches metadata from peers
+#   ./monolith_dl.sh <file.torrent | magnet_link> [--batch-size N]
+#
+#   --batch-size N   files per download-filter-delete cycle (default: 48)
+#
+# Disk usage per batch (approximate):
+#   --batch-size 48  =>  ~2 TB   (full run, no cycling)
+#   --batch-size 24  =>  ~1 TB   (good for older/smaller months)
+#   --batch-size 12  =>  ~500 GB (safe for recent large months)
+#   --batch-size  8  =>  ~300 GB (fits most included local NVMe)
+#
+# Example — two-Step strategy matching archive size distribution:
+#   ./monolith_dl.sh file.torrent --batch-size 24   # 2021-01..2022-12
+#   edit MIN_YM/MAX_YM, then:
+#   ./monolith_dl.sh file.torrent --batch-size 12   # 2023-01..2024-12
 #
 # Requirements:
 #   pip install torf
@@ -15,15 +25,33 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INPUT="${1:?Usage: $0 '<path/to/file.torrent or magnet_link>'}"
 DOWNLOAD_DIR="/workspace/downloads"
 FILTERED_SUBS="/workspace/filtered/submissions"
 FILTERED_COMS="/workspace/filtered/comments"
 META_DIR="/workspace/torrent_meta"
 LOG_FILE="${SCRIPT_DIR}/pipeline_monolith.log"
 WORKERS=$(nproc)
+
+# ── date range — adjust before each run ──────────────────────────────────────
 MIN_YM="2021-01"   # inclusive lower bound (YYYY-MM)
 MAX_YM="2024-12"   # inclusive upper bound (YYYY-MM)
+
+# ── parse arguments ───────────────────────────────────────────────────────────
+INPUT=""
+BATCH_SIZE=48   # default: all at once (original behaviour)
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --batch-size) BATCH_SIZE="${2:?--batch-size requires a value}"; shift 2 ;;
+        --*)          echo "Unknown option: $1"; exit 1 ;;
+        *)            INPUT="$1"; shift ;;
+    esac
+done
+
+if [ -z "$INPUT" ]; then
+    echo "Usage: $0 <file.torrent | magnet_link> [--batch-size N]"
+    exit 1
+fi
 
 mkdir -p "$META_DIR" "$FILTERED_SUBS" "$FILTERED_COMS"
 
@@ -31,9 +59,9 @@ log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
 }
 
-# ── Step 1: resolve torrent file ────────────────────────────────────────────
+# ── Step 1: resolve torrent source ──────────────────────────────────────────
 if [[ "$INPUT" == magnet:* ]]; then
-    log "Step 1: magnet link detected — fetching metadata from peers..."
+    log "Step 1: magnet detected — fetching metadata from peers..."
     aria2c \
         "${INPUT}" \
         --bt-metadata-only=true \
@@ -49,7 +77,6 @@ if [[ "$INPUT" == magnet:* ]]; then
     fi
     log "Metadata saved: ${TORRENT_FILE}"
 else
-    # Local .torrent file — use directly, no network needed
     TORRENT_FILE="$(realpath "$INPUT")"
     if [ ! -f "$TORRENT_FILE" ]; then
         log "ERROR: file not found: ${TORRENT_FILE}"
@@ -58,10 +85,12 @@ else
     log "Step 1: using local torrent file: ${TORRENT_FILE}"
 fi
 
-# ── Step 2: parse file list and build --select-file indices ─────────────────
-log "Step 2: parsing file list and selecting files ${MIN_YM}..${MAX_YM}..."
+# ── Step 2: build ordered index list ────────────────────────────────────────
+log "Step 2: selecting files ${MIN_YM}..${MAX_YM}..."
 
-SELECT_INDICES=$(python3 - <<EOF
+# Outputs one "INDEX PATH" line per selected file, sorted chronologically.
+# Both RC and RS for a given month land in the same batch where possible.
+INDEX_PATH_LIST=$(python3 - <<EOF
 import sys, re
 try:
     import torf
@@ -72,80 +101,110 @@ except ImportError:
 t      = torf.Torrent.read("${TORRENT_FILE}")
 min_ym = "${MIN_YM}"
 max_ym = "${MAX_YM}"
-selected = []
+rows   = []
 
-# torf uses 1-based file indices (matching aria2c's --select-file)
 for i, f in enumerate(t.files, start=1):
     path = str(f)
     m = re.search(r'[RC][CS]_(\d{4}-\d{2})\.zst', path)
     if m:
-        ym = m.group(1)          # "YYYY-MM" — string comparison works correctly
+        ym = m.group(1)
         if min_ym <= ym <= max_ym:
-            selected.append(i)
+            rows.append((ym, path, i))
             print(f"  SELECTED [{i:4d}] {path}", file=sys.stderr)
         else:
             print(f"  skipped  [{i:4d}] {path}", file=sys.stderr)
     else:
         print(f"  skipped  [{i:4d}] {path}  (no date match)", file=sys.stderr)
 
-print(",".join(str(i) for i in selected))
+rows.sort()   # chronological; submissions sort before comments within same month
+for ym, path, idx in rows:
+    print(f"{idx} {path}")
 EOF
 )
 
-if [ -z "$SELECT_INDICES" ]; then
+if [ -z "$INDEX_PATH_LIST" ]; then
     log "ERROR: no files matched range ${MIN_YM}..${MAX_YM}"
     exit 1
 fi
 
-COUNT=$(echo "$SELECT_INDICES" | tr ',' '\n' | wc -l)
-log "Selected ${COUNT} files — indices: ${SELECT_INDICES}"
+TOTAL_FILES=$(echo "$INDEX_PATH_LIST" | wc -l)
+TOTAL_BATCHES=$(( (TOTAL_FILES + BATCH_SIZE - 1) / BATCH_SIZE ))
+log "Selected ${TOTAL_FILES} files => ${TOTAL_BATCHES} batch(es) of up to ${BATCH_SIZE}"
 
-# ── Step 3: download only selected files ────────────────────────────────────
-log "Step 3: downloading ${COUNT} selected files..."
+# ── helper: filter both dirs in parallel then clean up ───────────────────────
+filter_and_clean() {
+    local subs_dir="${DOWNLOAD_DIR}/reddit/submissions"
+    local coms_dir="${DOWNLOAD_DIR}/reddit/comments"
 
-aria2c \
-    "${TORRENT_FILE}" \
-    --select-file="${SELECT_INDICES}" \
-    --seed-time=0 \
-    --dir="${DOWNLOAD_DIR}" \
-    --console-log-level=notice \
-    --summary-interval=60 \
-    2>&1 | tee -a "$LOG_FILE"
+    if [ -d "$subs_dir" ] && compgen -G "${subs_dir}/*.zst" > /dev/null 2>&1; then
+        log "  Filtering submissions (${WORKERS} workers)..."
+        python3 "${SCRIPT_DIR}/worker.py" \
+            "$subs_dir" "$FILTERED_SUBS" \
+            --workers "$WORKERS" --delete-source \
+            2>&1 | tee -a "$LOG_FILE" &
+    fi
 
-log "Download complete."
+    if [ -d "$coms_dir" ] && compgen -G "${coms_dir}/*.zst" > /dev/null 2>&1; then
+        log "  Filtering comments (${WORKERS} workers)..."
+        python3 "${SCRIPT_DIR}/worker.py" \
+            "$coms_dir" "$FILTERED_COMS" \
+            --workers "$WORKERS" --delete-source \
+            2>&1 | tee -a "$LOG_FILE" &
+    fi
 
-# ── Step 4 & 5: filter submissions and comments in parallel ─────────────────
-# Both dirs are independent — run concurrently so the faster one
-# (submissions) doesn't block behind comments.
-SUBS_DIR="${DOWNLOAD_DIR}/reddit/submissions"
-COMS_DIR="${DOWNLOAD_DIR}/reddit/comments"
+    wait   # submissions + comments run in parallel
 
-if [ -d "$SUBS_DIR" ] && compgen -G "${SUBS_DIR}/*.zst" > /dev/null; then
-    log "Filtering submissions with ${WORKERS} workers (background)..."
-    python3 "${SCRIPT_DIR}/worker.py" \
-        "$SUBS_DIR" "$FILTERED_SUBS" \
-        --workers "$WORKERS" --delete-source \
-        2>&1 | tee -a "$LOG_FILE" &
-fi
+    find "${DOWNLOAD_DIR}" -type f -name "*.aria2" -delete
+    find "${DOWNLOAD_DIR}" -mindepth 2 -type d -empty -delete
+}
 
-if [ -d "$COMS_DIR" ] && compgen -G "${COMS_DIR}/*.zst" > /dev/null; then
-    log "Filtering comments with ${WORKERS} workers (background)..."
-    python3 "${SCRIPT_DIR}/worker.py" \
-        "$COMS_DIR" "$FILTERED_COMS" \
-        --workers "$WORKERS" --delete-source \
-        2>&1 | tee -a "$LOG_FILE" &
-fi
+# ── Step 3: batched download => filter => delete loop ─────────────────────────
+BATCH_NUM=0
+BATCH_INDICES=()
 
-log "Waiting for both filter jobs to complete..."
-wait
-log "Filtering complete."
+process_batch() {
+    if [ ${#BATCH_INDICES[@]} -eq 0 ]; then return; fi
 
-# ── Step 6: cleanup ──────────────────────────────────────────────────────────
-log "Cleaning up..."
-find "${DOWNLOAD_DIR}/reddit" -type f \( -name "*.aria2" -o -name "*.torrent" \) -delete
-find "${DOWNLOAD_DIR}/reddit" -mindepth 1 -type d -empty -delete
-find "${DOWNLOAD_DIR}" -mindepth 1 -maxdepth 1 -type d -empty -delete
+    BATCH_NUM=$(( BATCH_NUM + 1 ))
+    local select_str
+    select_str=$(IFS=,; echo "${BATCH_INDICES[*]}")
+    local count=${#BATCH_INDICES[@]}
 
-log "All done."
+    log "================================================================"
+    log "Batch ${BATCH_NUM}/${TOTAL_BATCHES} — downloading ${count} file(s)"
+    log "  Indices: ${select_str}"
+
+    aria2c \
+        "${TORRENT_FILE}" \
+        --select-file="${select_str}" \
+        --seed-time=0 \
+        --dir="${DOWNLOAD_DIR}" \
+        --console-log-level=notice \
+        --summary-interval=60 \
+        2>&1 | tee -a "$LOG_FILE"
+
+    log "Batch ${BATCH_NUM}/${TOTAL_BATCHES} — download complete, filtering..."
+    filter_and_clean
+
+    log "Batch ${BATCH_NUM}/${TOTAL_BATCHES} — done."
+    log "  Submissions so far: $(ls "${FILTERED_SUBS}"/*.jsonl 2>/dev/null | wc -l) file(s)"
+    log "  Comments so far:    $(ls "${FILTERED_COMS}"/*.jsonl 2>/dev/null | wc -l) file(s)"
+
+    BATCH_INDICES=()
+}
+
+while IFS=" " read -r idx path; do
+    BATCH_INDICES+=("$idx")
+    if [ ${#BATCH_INDICES[@]} -ge "$BATCH_SIZE" ]; then
+        process_batch
+    fi
+done <<< "$INDEX_PATH_LIST"
+
+# flush any remaining files in a partial last batch
+process_batch
+
+# ── Done ──────────────────────────────────────────────────────────────────────
+log "================================================================"
+log "All ${TOTAL_BATCHES} batch(es) complete."
 log "Submissions: $(ls "${FILTERED_SUBS}"/*.jsonl 2>/dev/null | wc -l) file(s)"
 log "Comments:    $(ls "${FILTERED_COMS}"/*.jsonl 2>/dev/null | wc -l) file(s)"
