@@ -1,4 +1,11 @@
-Right now we download each torrent in sequence, since they are all ~50-60GB in size, which allows us to keep the maximum disk usage low. 
-The Files for 2024/12 and prior are available in this torrent:  
-https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13/tech&filelist=1  
-So we need to either brute force with a 3TB download or mess around with selective downloading etc.
+Process files older than 2025-01 available here https://academictorrents.com/details/3e3f64dee22dc304cdd2546254ca1f8e8ae542b4
+Preprocess Data:
+  Unpack & Filter 
+  Flatten Threads
+Begin Labeling
+  Zeroshot a couple hundred threads
+  Doublecheck results
+Finetune DeBERTa-v3-large:
+  Pretrain for a bit on the entire corpus
+  Then begin finetuning & evaluating on rest of threads => need a holdout set for evaluation
+  Maybe just zeroshot the entire thing, should cost like $50 give or take
