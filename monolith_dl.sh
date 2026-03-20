@@ -9,12 +9,12 @@
 #   --batch-size N   files per download-filter-delete cycle (default: 48)
 #
 # Disk usage per batch (approximate):
-#   --batch-size 48  =>  ~2 TB   (full run, no cycling)
-#   --batch-size 24  =>  ~1 TB   (good for older/smaller months)
-#   --batch-size 12  =>  ~500 GB (safe for recent large months)
-#   --batch-size  8  =>  ~300 GB (fits most included local NVMe)
+#   --batch-size 48  →  ~2 TB   (full run, no cycling)
+#   --batch-size 24  →  ~1 TB   (good for older/smaller months)
+#   --batch-size 12  →  ~500 GB (safe for recent large months)
+#   --batch-size  8  →  ~300 GB (fits most included local NVMe)
 #
-# Example — two-Step strategy matching archive size distribution:
+# Example — two-phase strategy matching archive size distribution:
 #   ./monolith_dl.sh file.torrent --batch-size 24   # 2021-01..2022-12
 #   edit MIN_YM/MAX_YM, then:
 #   ./monolith_dl.sh file.torrent --batch-size 12   # 2023-01..2024-12
@@ -59,9 +59,9 @@ log() {
     echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG_FILE"
 }
 
-# ── Step 1: resolve torrent source ──────────────────────────────────────────
+# ── Phase 1: resolve torrent source ──────────────────────────────────────────
 if [[ "$INPUT" == magnet:* ]]; then
-    log "Step 1: magnet detected — fetching metadata from peers..."
+    log "Phase 1: magnet detected — fetching metadata from peers..."
     aria2c \
         "${INPUT}" \
         --bt-metadata-only=true \
@@ -82,11 +82,11 @@ else
         log "ERROR: file not found: ${TORRENT_FILE}"
         exit 1
     fi
-    log "Step 1: using local torrent file: ${TORRENT_FILE}"
+    log "Phase 1: using local torrent file: ${TORRENT_FILE}"
 fi
 
-# ── Step 2: build ordered index list ────────────────────────────────────────
-log "Step 2: selecting files ${MIN_YM}..${MAX_YM}..."
+# ── Phase 2: build ordered index list ────────────────────────────────────────
+log "Phase 2: selecting files ${MIN_YM}..${MAX_YM}..."
 
 # Outputs one "INDEX PATH" line per selected file, sorted chronologically.
 # Both RC and RS for a given month land in the same batch where possible.
@@ -129,7 +129,7 @@ fi
 
 TOTAL_FILES=$(echo "$INDEX_PATH_LIST" | wc -l)
 TOTAL_BATCHES=$(( (TOTAL_FILES + BATCH_SIZE - 1) / BATCH_SIZE ))
-log "Selected ${TOTAL_FILES} files => ${TOTAL_BATCHES} batch(es) of up to ${BATCH_SIZE}"
+log "Selected ${TOTAL_FILES} files → ${TOTAL_BATCHES} batch(es) of up to ${BATCH_SIZE}"
 
 # ── helper: filter both dirs in parallel then clean up ───────────────────────
 filter_and_clean() {
@@ -158,7 +158,7 @@ filter_and_clean() {
     find "${DOWNLOAD_DIR}" -mindepth 2 -type d -empty -delete
 }
 
-# ── Step 3: batched download => filter => delete loop ─────────────────────────
+# ── Phase 3: batched download → filter → delete loop ─────────────────────────
 BATCH_NUM=0
 BATCH_INDICES=()
 
@@ -177,6 +177,7 @@ process_batch() {
     aria2c \
         "${TORRENT_FILE}" \
         --select-file="${select_str}" \
+        --file-allocation=none \
         --seed-time=0 \
         --dir="${DOWNLOAD_DIR}" \
         --console-log-level=notice \
