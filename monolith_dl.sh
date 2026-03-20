@@ -178,6 +178,10 @@ process_batch() {
         "${TORRENT_FILE}" \
         --select-file="${select_str}" \
         --file-allocation=none \
+        --max-connection-per-server=16 \
+        --split=16 \
+        --bt-max-peers=128 \
+        --max-overall-download-limit=0 \
         --seed-time=0 \
         --dir="${DOWNLOAD_DIR}" \
         --console-log-level=notice \
