@@ -20,7 +20,7 @@ FILTERED_COMS="/workspace/filtered/comments"
 RELEASE_DIR="/workspace/release"
 LOG_FILE="${SCRIPT_DIR}/repack.log"
 
-LEVEL=15 
+LEVEL=19 
 THREADS=$(nproc)
 
 # parse args
