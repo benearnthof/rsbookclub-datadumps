@@ -29,4 +29,22 @@ The output structure mirrors the structure of the data dumps.
 * Step 6: Save results & repacked files to disk and nuke your VM since we'll need a GPU for finetuning next.
 
 ## Part 2 -- Preprocessing the rsbookclub Data
-# TODO
+TODO:  
+* Convert jsonl threads to flattened documents for each thread (by thread & comment IDs)
+* Label data (zeroshot entire thing?)
+* Pretrain & finetune model for NER.
+
+Strategies (from lowest to highest cost):  
+* LoRA for NER fine-tuning only.  
+* Embeding-only Task Adaptive Pretraining.  
+* Selective top-layer DAPT. Unfreeze top ~6 layers or so, should be managable on a single GPU.  
+* LoRA-based DAPT: Continued pretraining on corpus updating only LoRA adapters. 
+
+## Literature
+* DeBERTaV3: https://arxiv.org/abs/2111.09543  
+* Domain-adaptive pretraining these documents https://arxiv.org/pdf/2004.10964  
+* NER-BERT for small corpus NER https://arxiv.org/pdf/2112.00405  
+* CrossNER: Evaluating Cross-Domain NER https://arxiv.org/pdf/2012.04373
+* Simple & Efficient TAPT for Text Classif: https://arxiv.org/pdf/2209.12943
+* LoRA Tradeoffs: https://arxiv.org/abs/2405.09673
+* BERT Rediscovers the Classical NLP Pipeline https://arxiv.org/pdf/1905.05950
