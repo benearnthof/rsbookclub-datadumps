@@ -7,7 +7,7 @@ https://arctic-shift.photon-reddit.com/download-tool
 I'm doing this to double check, since I have noticed that results on the download tool for some users are incomplete.
 
 If you're only interested in the filtered data, clone this repo and check out the /releases directory.  
-If you'd like to reproduce the filtering from the 4TB torrent follow the steps below.  
+If you'd like to reproduce the filtering from the 4TB torrent, e.g. for a separate sub, follow the steps below.  
 
 ## Part 1 -- Preprocessing of Reddit Data Dumps  
 To reproduce the filtered data dumps available in the /releases directory of this repo follow these steps:  
