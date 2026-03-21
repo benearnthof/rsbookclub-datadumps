@@ -1,6 +1,11 @@
 # rsbookclub-datadumps
 Code for the filtering &amp; analysis of rsbookclub data.  
 
+### Important:
+It is probably a lot faster to download the data directly from the arctic-shift data dumps through their download tool:   
+https://arctic-shift.photon-reddit.com/download-tool  
+I'm doing this to double check, since I have noticed that results on the download tool for some users are incomplete.
+
 If you're only interested in the filtered data, clone this repo and check out the /releases directory.  
 If you'd like to reproduce the filtering from the 4TB torrent follow the steps below.  
 
