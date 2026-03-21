@@ -50,14 +50,10 @@ log = logging.getLogger("filter")
 log.setLevel(logging.INFO)
 log.addHandler(logging.StreamHandler(sys.stdout))
 
-# zstd line iterator, based on code linked at top of file
+# zstd line iterators, based on code linked at top of file
 def _iter_lines_pipe(file_path: Path):
-    """
-    Decompress via the system `zstd` binary (pure C, fastest path).
-    Yields lines as raw bytes, no json decode yet.
-    """
-    proc = subprocess.Popen(
-        [_ZSTD_BIN, "-dc", "--no-progress", str(file_path)],
+    proc = subprocess.Popen( # added long=31 for compatibility 
+        [_ZSTD_BIN, "-dc", "--long=31", "--no-progress", str(file_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         bufsize=0,
@@ -76,11 +72,7 @@ def _iter_lines_pipe(file_path: Path):
 
 
 def _iter_lines_zstandard(file_path: Path):
-    """
-    Fallback: decompress via python-zstandard when the binary is absent. (optional)
-    Also yields raw lines as bytes.
-    """
-    import zstandard 
+    import zstandard
 
     with open(file_path, "rb") as fh:
         reader = zstandard.ZstdDecompressor(max_window_size=MAX_WINDOW).stream_reader(fh)
@@ -99,6 +91,10 @@ def _iter_lines_zstandard(file_path: Path):
 
 
 def iter_lines_zst(file_path: Path):
+    """
+    Unified entry point: picks the fastest available decompressor.
+    Always yields raw bytes, decoding is deferred to the filter step.
+    """
     if _ZSTD_BIN:
         yield from _iter_lines_pipe(file_path)
     else:
@@ -127,13 +123,10 @@ def process_file(
     with open(out_path, "w", encoding="utf-8") as out_fh:
         for raw_line in iter_lines_zst(file_path):
             total_lines += 1
-
-            # fast-reject (bytes, no decode, no JSON parse
-            # Lower-case the raw bytes once and check for the subreddit name.
+            # fast-reject
             if not any(p in raw_line.lower() for p in _PROBES):
                 continue
-
-            # slow-accept (only decode lines that match filters)
+            # slow-accept
             try:
                 obj = json.loads(raw_line)
                 last_date = datetime.utcfromtimestamp(int(obj["created_utc"]))
@@ -238,7 +231,7 @@ def main() -> None:
         source_dir    = args.source_dir,
         output_dir    = args.output_dir,
         workers       = args.workers,
-        delete_source = args.delete_source,
+        delete_source = False # args.delete_source, # TODO: revert this
     )
 
 
