@@ -14,7 +14,7 @@ To reproduce the filtered data dumps available in the /releases directory of thi
 * Step 1: Head over to https://academictorrents.com/details/3d426c47c767d40f82c7ef0f47c3acacedd2bf44/tech&filelist=1
 * Step 2: Download the metadata (required to pick which date ranges are of interest in next step) contained in the .torrent file available via the download button
 * Step 3: Spin up a VM with a fast internet connection, run ./setup.sh & upload the .torrent to the VM. 
-* Step 4: execute monolith_dl.sh: (Alternatively you may first download the torrent w/ download_torrent.sh & then perform filtering w/ filter_data.sh subsequently. For the filtering step 2GB of RAM per worker is recommended.  
+* Step 4: execute monolith_dl.sh: (Alternatively you may first download the torrent w/ download_torrent.sh & then perform filtering w/ filter_data.sh subsequently.) For the filtering step 2GB of RAM per worker is recommended.  
 ```
 chmod +x monolith_dl.sh
 nohup ./monolith_dl.sh /workspace/reddit-3d426c47c767d40f82c7ef0f47c3acacedd2bf44.torrent --batch-size 96
