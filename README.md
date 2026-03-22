@@ -29,8 +29,12 @@ The output structure mirrors the structure of the data dumps.
 * Step 6: Save results & repacked files to disk and nuke your VM since we'll need a GPU for finetuning next.
 
 ## Part 2 -- Preprocessing the rsbookclub Data
+After running part 1 or alternatively cloning the repo and using the data in ./releases we can proceed with preprocessing.
+To convert the compressed monthly data in ./releases to flat comment threads for labelling and downstream processing we execute `preprocessing.sh`.  
+This performs decompression & merging, pruning of unnecessary data, and flattening & export of jsonl data to `labelstudio_import.json`, `threads.jsonl`, `and corpus.txt`. 
+
+### Labeling
 TODO:  
-* Convert jsonl threads to flattened documents for each thread (by thread & comment IDs)
 * Label data (zeroshot entire thing?)
 * Pretrain & finetune model for NER.
 
