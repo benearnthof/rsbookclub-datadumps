@@ -1,3 +1,10 @@
+# uncompressed files
+*.jsonl
+*.json
+corpus.txt
+releases/rsbookclub_comments.jsonl.zst
+releases/rsbookclub_submissions.jsonl.zst
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
