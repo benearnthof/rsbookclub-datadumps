@@ -34,8 +34,26 @@ To convert the compressed monthly data in ./releases to flat comment threads for
 This performs decompression & merging, pruning of unnecessary data, and flattening & export of jsonl data to `labelstudio_import.json`, `threads.jsonl`, `and corpus.txt`. 
 
 ### Labeling
+To proceed with labeling we convert threads.jsonl into tasks.json, such that we can label contiguous threads in label-studio and use the Claude-API to pre-label some, or all, of the threads for human review and downstream processing. 
+```bash
+python ./preprocessing/convert_threads.py threads.jsonl tasks.json pretty
+# Yields tasks.json in pretty printed format.
+```
+Then we use the Claude-API to prelabel a subset of the 11k threads. Set your API key as `ANTHROPIC_API_KEY` environment variable and run: 
+```bash
+python ./nlp/prelabel.py extract tasks.json extractions.jsonl --n 10
+```
+This will query the API with the first 10 documents and save the corresponding extractions to extractions.jsonl. We can then proceed by calculating the respective span indices for each entity like so:
+```bash
+python ./nlp/prelabel.py annotate tasks.json extractions.jsonl preannotated.json
+```
+Or, alternatively, we can do both subsequently in one command:
+```bash
+python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
+```
+
 TODO:  
-* Label data (zeroshot entire thing?)
+* Label data (zeroshot entire thing? Would cost ~$50 for 11k threads.)
 * Pretrain & finetune model for NER.
 
 Strategies (from lowest to highest cost):  
