@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
 """
-Two-phase NER pre-annotation pipeline for Label Studio.
+NER pre-annotation pipeline for Label Studio.
 
-Phase 1  extract  — call Claude API per task, save raw entity strings to a
-                    checkpoint JSONL so the run is resumable.
-Phase 2  annotate — load tasks.json + checkpoint, resolve exact character
-                    spans, write a Label Studio pre-annotation JSON.
+1. Call Claude API per thread, save raw entity strings to extractions.jsonl so the run is resumable.
+2. Load tasks.json + checkpoint, resolve exact character spans, write a Label Studio pre-annotation JSON.
 
 Typical workflow
-----------------
-# First time (or after a crash – already-done tasks are skipped):
-python ner_preannotate.py extract  tasks.json extractions.jsonl
+# First time (or after a crash when we skip threads that have already been processed):
+python prelabel.py extract tasks.json extractions.jsonl
 
 # Build the final pre-annotation file:
-python ner_preannotate.py annotate tasks.json extractions.jsonl preannotated.json
+python prelabel.py annotate tasks.json extractions.jsonl preannotated.json
 
 # Or run both phases in one shot:
-python ner_preannotate.py run      tasks.json extractions.jsonl preannotated.json
+python prelabel.py run tasks.json extractions.jsonl preannotated.json
 
 Label Studio import
--------------------
-Import preannotated.json via  Project → Import  and choose
+Import preannotated.json via  Project -> Import  and choose
 "Import as pre-annotations" so the spans appear as draft annotations
 for human review.
 """
