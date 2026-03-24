@@ -39,12 +39,7 @@ try:
 except ImportError:
     anthropic = None   # checked at runtime only when the extract phase runs
 
-
-# ---------------------------------------------------------------------------
-# Shared constants
-# ---------------------------------------------------------------------------
-
-MODEL          = "claude-sonnet-4-20250514"
+MODEL          = "claude-haiku-4-5-20251001"
 MAX_TOKENS     = 4096   # entity lists can be long for dense threads; 1024 was too small
 REQUESTS_PER_MINUTE = 50        # stay well under tier-1 rate limit
 SLEEP_BETWEEN_CALLS = 60 / REQUESTS_PER_MINUTE   # ~1.2 s
