@@ -53,10 +53,11 @@ python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
 ```
 
 TODO:  
-* Label data (zeroshot entire thing? Would cost ~$50 for 11k threads.)
-* Add preprocessing step to only keep longest overlapping span for annotations.
-* Add preprocessing step to annotate every occurrence per thread
+* Pre-label rest of data via claude api
+* Consolidate auto-generated labels with Open Library Data Dumps https://openlibrary.org/developers/dumps 
 * Pretrain & finetune model for NER.
+* Train model for BOOK - WRITER link prediction
+* Write scripts to automate integrating monthly reddit data dumps
 
 Strategies (from lowest to highest cost):  
 * LoRA for NER fine-tuning only.  
