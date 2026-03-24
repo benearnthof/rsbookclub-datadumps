@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """
-NER pre-annotation pipeline for Label Studio.
+Two-phase NER pre-annotation pipeline for Label Studio.
 
-1. Call Claude API per thread, save raw entity strings to extractions.jsonl so the run is resumable.
-2. Load tasks.json + checkpoint, resolve exact character spans, write a Label Studio pre-annotation JSON.
+Phase 1  extract  — call Claude API per task, save raw entity strings to a
+                    checkpoint JSONL so the run is resumable.
+Phase 2  annotate — load tasks.json + checkpoint, resolve exact character
+                    spans, write a Label Studio pre-annotation JSON.
 
 Typical workflow
-# First time (or after a crash when we skip threads that have already been processed):
-python prelabel.py extract tasks.json extractions.jsonl
+----------------
+# First time (or after a crash – already-done tasks are skipped):
+python ner_preannotate.py extract  tasks.json extractions.jsonl
 
 # Build the final pre-annotation file:
-python prelabel.py annotate tasks.json extractions.jsonl preannotated.json
+python ner_preannotate.py annotate tasks.json extractions.jsonl preannotated.json
 
 # Or run both phases in one shot:
-python prelabel.py run tasks.json extractions.jsonl preannotated.json
+python ner_preannotate.py run      tasks.json extractions.jsonl preannotated.json
 
 Label Studio import
+-------------------
 Import preannotated.json via  Project → Import  and choose
 "Import as pre-annotations" so the spans appear as draft annotations
 for human review.
@@ -31,15 +35,19 @@ import uuid
 from pathlib import Path
 
 try:
-    import anthropic # type: ignore
+    import anthropic
 except ImportError:
     anthropic = None   # checked at runtime only when the extract phase runs
 
 
-MODEL          = "claude-haiku-4-5-20251001"
-MAX_TOKENS     = 4096
-REQUESTS_PER_MINUTE = 50
-SLEEP_BETWEEN_CALLS = 60 / REQUESTS_PER_MINUTE
+# ---------------------------------------------------------------------------
+# Shared constants
+# ---------------------------------------------------------------------------
+
+MODEL          = "claude-sonnet-4-20250514"
+MAX_TOKENS     = 4096   # entity lists can be long for dense threads; 1024 was too small
+REQUESTS_PER_MINUTE = 50        # stay well under tier-1 rate limit
+SLEEP_BETWEEN_CALLS = 60 / REQUESTS_PER_MINUTE   # ~1.2 s
 
 LABEL_BOOK   = "BOOK"
 LABEL_WRITER = "WRITER"
@@ -91,7 +99,7 @@ def call_api(client, text: str) -> list[dict]:
         messages=[{"role": "user", "content": text}],
     )
 
-    # Catch output truncation before attempting to parse a truncated JSON
+    # Catch output truncation before attempting to parse — a truncated JSON
     # array is the most common cause of parse failures on long threads.
     if response.stop_reason == "max_tokens":
         print(
@@ -194,7 +202,6 @@ def phase_extract(tasks_path: Path, checkpoint_path: Path, n: int | None = None)
     print("Extraction complete.", file=sys.stderr)
 
 
-
 def normalise(s: str) -> str:
     """Lowercase, collapse whitespace, normalise unicode for fuzzy matching."""
     s = unicodedata.normalize("NFKD", s)
@@ -203,15 +210,51 @@ def normalise(s: str) -> str:
     return s
 
 
+# Matches any apostrophe / right-quote variant that appears in Reddit text
+_APOS_RE = re.compile(r"[''`ʼʻ]")
+
+def _normalise_apostrophes(s: str) -> str:
+    """Replace curly/modifier apostrophe variants with a plain ASCII apostrophe.
+    All substitutions are 1-for-1 so character offsets are preserved."""
+    return _APOS_RE.sub("'", s)
+
+
+def _flexible_pattern(entity_text: str) -> str:
+    """
+    Build a regex pattern for entity_text that tolerates two common divergences
+    between LLM output and Reddit source text.
+    """
+    # 1. Normalise apostrophes in the entity string (1-for-1, offsets preserved)
+    s = _normalise_apostrophes(entity_text)
+
+    # 2. Split on & / and so we can rejoin with a flexible separator.
+    #    Consume surrounding whitespace in the split so parts are clean.
+    parts = re.split(r"\s*&\s*|\s+and\s+", s, flags=re.IGNORECASE)
+    escaped = [re.escape(p) for p in parts]
+
+    if len(escaped) > 1:
+        # Match any of: & &amp; and  (covers Reddit HTML entity artifacts)
+        pattern = r"\s*(?:&amp;|&|and)\s*".join(escaped)
+    else:
+        pattern = escaped[0]
+
+    # 3. Replace the literal apostrophe in the escaped pattern with a character
+    #    class that matches any variant present in the source text.
+    #    re.escape() does not escape apostrophes, so they appear as plain '.
+    pattern = pattern.replace("'", "['\u2019\u2018`\u02bc\u02bb]")
+
+    return pattern
+
+
 def find_spans(text: str, entity_text: str) -> list[tuple[int, int]]:
     """
-    Return a list of (start, end) character offsets for all occurrences of
-    entity_text in text.  Three passes, stopping at the first that yields hits:
-
-      1. Verbatim regex (preserves original capitalisation)
-      2. Case-insensitive regex
-      3. Normalised match on a lowercased copy of the text
-         (catches unicode/whitespace drift between LLM output and source)
+    Return all (start, end) character offsets for entity_text in text.
+    Four passes, stopping at the first that yields hits:
+      1. Verbatim
+      2. Case-insensitive
+      3. Unicode/whitespace normalised (NFKD lowercase)
+      4. Flexible: tolerates apostrophe variants (curly vs straight) and
+                   '&' vs 'and' — the two most common LLM/Reddit divergences
     """
     spans: list[tuple[int, int]] = []
 
@@ -221,17 +264,17 @@ def find_spans(text: str, entity_text: str) -> list[tuple[int, int]]:
         except re.error:
             return []
 
-    # Pass 1 – verbatim
+    # Pass 1: verbatim
     spans = _regex_spans(re.escape(entity_text))
     if spans:
         return spans
 
-    # Pass 2 – case-insensitive
+    # Pass 2: case-insensitive
     spans = _regex_spans(re.escape(entity_text), re.IGNORECASE)
     if spans:
         return spans
 
-    # Pass 3 – normalised search on normalised text
+    # Pass 3: normalised search on normalised text
     norm_text   = normalise(text)
     norm_entity = normalise(entity_text)
     if not norm_entity:
@@ -239,15 +282,48 @@ def find_spans(text: str, entity_text: str) -> list[tuple[int, int]]:
 
     for m in re.finditer(re.escape(norm_entity), norm_text):
         norm_start, norm_end = m.start(), m.end()
-        # Map normalised offsets back to original text offsets.
-        # This works perfectly when the only difference is case/unicode;
-        # it breaks when whitespace was collapsed – we accept that rare miss.
         orig_start = _norm_to_orig_offset(text, norm_text, norm_start)
         orig_end   = _norm_to_orig_offset(text, norm_text, norm_end)
         if orig_start is not None and orig_end is not None:
             spans.append((orig_start, orig_end))
 
-    return spans
+    if spans:
+        return spans
+
+    # Pass 4: flexible: apostrophe variants + & / &amp; / and.
+    flex = _flexible_pattern(entity_text)
+    spans = _regex_spans(flex, re.IGNORECASE)
+    if spans:
+        return spans
+
+    # Pass 5: component fallback.
+    words = entity_text.split()
+    if len(words) > 1:
+        for length in range(len(words) - 1, 0, -1):
+            for start_idx in range(len(words) - length + 1):
+                subseq = " ".join(words[start_idx : start_idx + length])
+                flex_sub = _flexible_pattern(subseq)
+                spans = _regex_spans(flex_sub, re.IGNORECASE)
+                if spans:
+                    return spans
+                # Also try NFKD-normalised version of the subsequence
+                norm_sub = normalise(subseq)
+                if norm_sub:
+                    raw = [
+                        (m.start(), m.end())
+                        for m in re.finditer(re.escape(norm_sub), norm_text)
+                    ]
+                    mapped = [
+                        (s, e)
+                        for ns, ne in raw
+                        for s, e in [(_norm_to_orig_offset(text, norm_text, ns),
+                                      _norm_to_orig_offset(text, norm_text, ne))]
+                        if s is not None and e is not None
+                    ]
+                    if mapped:
+                        return mapped
+
+    return []
 
 
 def _norm_to_orig_offset(orig: str, norm: str, norm_offset: int) -> int | None:
@@ -265,20 +341,31 @@ def _norm_to_orig_offset(orig: str, norm: str, norm_offset: int) -> int | None:
     return None
 
 
-def dedup_spans(annotations: list[dict]) -> list[dict]:
+def remove_overlapping_keep_longest(annotations: list[dict]) -> list[dict]:
     """
-    Remove exact duplicate (start, end, label) triples that can arise when
-    the LLM returns the same entity string multiple times.
+    For spans of the same label class that overlap, keep only the longest one.
     """
-    seen = set()
-    out  = []
+    from collections import defaultdict
+
+    by_label: dict[str, list[dict]] = defaultdict(list)
     for ann in annotations:
-        key = (ann["value"]["start"], ann["value"]["end"],
-               ann["value"]["labels"][0])
-        if key not in seen:
-            seen.add(key)
-            out.append(ann)
-    return out
+        by_label[ann["value"]["labels"][0]].append(ann)
+
+    kept: list[dict] = []
+    for label, anns in by_label.items():
+        # Longest span first so greedy selection always prefers the larger match
+        anns.sort(key=lambda a: a["value"]["end"] - a["value"]["start"], reverse=True)
+        accepted: list[dict] = []
+        for ann in anns:
+            s, e = ann["value"]["start"], ann["value"]["end"]
+            if not any(
+                max(s, a["value"]["start"]) < min(e, a["value"]["end"])
+                for a in accepted
+            ):
+                accepted.append(ann)
+        kept.extend(accepted)
+
+    return kept
 
 
 def entities_to_ls_result(text: str, entities: list[dict]) -> list[dict]:
@@ -312,7 +399,7 @@ def entities_to_ls_result(text: str, entities: list[dict]) -> list[dict]:
                 },
             })
 
-    return dedup_spans(result), unmatched
+    return remove_overlapping_keep_longest(result), unmatched
 
 
 def phase_annotate(
@@ -393,7 +480,6 @@ def parse_args(argv=None):
     )
     sub = p.add_subparsers(dest="phase", required=True)
 
-    # extract
     pe = sub.add_parser("extract",
         help="Phase 1: call Claude API, write entity strings to checkpoint JSONL.")
     pe.add_argument("tasks",      type=Path, help="tasks.json from threads_to_labelstudio.py")
@@ -401,7 +487,6 @@ def parse_args(argv=None):
     pe.add_argument("--n", type=int, default=None, metavar="N",
                     help="Only process the first N tasks (useful for testing)")
 
-    # annotate
     pa = sub.add_parser("annotate",
         help="Phase 2: resolve spans from checkpoint, write LS pre-annotation JSON.")
     pa.add_argument("tasks",      type=Path, help="tasks.json")
@@ -411,7 +496,6 @@ def parse_args(argv=None):
     pa.add_argument("--n", type=int, default=None, metavar="N",
                     help="Only annotate the first N tasks")
 
-    # both
     pr = sub.add_parser("run",
         help="Run both phases end-to-end.")
     pr.add_argument("tasks",      type=Path)

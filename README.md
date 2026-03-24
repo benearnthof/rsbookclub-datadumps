@@ -54,6 +54,7 @@ python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
 
 TODO:  
 * Label data (zeroshot entire thing? Would cost ~$50 for 11k threads.)
+* Add preprocessing step to only keep longest overlapping span for annotations.
 * Pretrain & finetune model for NER.
 
 Strategies (from lowest to highest cost):  
