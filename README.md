@@ -52,9 +52,10 @@ Or, alternatively, we can do both subsequently in one command:
 ```bash
 python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
 ```
+This will generate `preannotated.json` (also available as zstd compressed file in ./releases/labels/) which we can directly import to LabelStudio.
 
 TODO:  
-* Pre-label rest of data via claude api
+* Manually check all files that yielded 0 entities or returned with an api error.
 * Consolidate auto-generated labels with Open Library Data Dumps https://openlibrary.org/developers/dumps 
 * Pretrain & finetune model for NER.
 * Train model for BOOK - WRITER link prediction
