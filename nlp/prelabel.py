@@ -36,7 +36,7 @@ except ImportError:
     anthropic = None   # checked at runtime only when the extract phase runs
 
 MODEL          = "claude-haiku-4-5-20251001"
-MAX_TOKENS     = 8192 # max output tokens, 4096 covers like 99% of threads, even 8k still maxes out 4/11194 times.
+MAX_TOKENS     = 8192 # max output tokens, 4096 covers like 99% of threads, even 8k still maxes out 5/11194 times.
 REQUESTS_PER_MINUTE = 50        # stay well under tier-1 rate limit
 SLEEP_BETWEEN_CALLS = 60 / REQUESTS_PER_MINUTE   # ~1.2 s
 
