@@ -43,7 +43,8 @@ Then we use the Claude-API to prelabel a subset of the 11k threads. Set your API
 ```bash
 python ./nlp/prelabel.py extract tasks.json extractions.jsonl --n 10
 ```
-This will query the API with the first 10 documents and save the corresponding extractions to extractions.jsonl. We can then proceed by calculating the respective span indices for each entity like so:
+This will query the API with the first 10 documents and save the corresponding extractions to extractions.jsonl. It should be noted, that one could probably cut down on token cost by cachign the system prompt but in total this cost me like $40 give or take so I just kept it as is for now. The number of monthly threads is also not too extreme.  
+We can then proceed by calculating the respective span indices for each entity like so:
 ```bash
 python ./nlp/prelabel.py annotate tasks.json extractions.jsonl preannotated.json
 ```
