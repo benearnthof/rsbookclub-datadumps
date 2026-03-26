@@ -81,24 +81,18 @@ Example output:
 def call_api(client, text: str) -> list[dict]:
     """
     Call the Claude API and return a list of {"text": ..., "label": ...} dicts.
-    Always uses streaming — required by the SDK for requests that may take
-    longer than 10 minutes (i.e. very long threads with large max_tokens).
     Returns an empty list on parse failure (logged to stderr).
     """
-    chunks: list[str] = []
-    stop_reason: str | None = None
-
-    with client.messages.stream(
+    response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": text}],
-    ) as stream:
-        for chunk in stream.text_stream:
-            chunks.append(chunk)
-        stop_reason = stream.get_final_message().stop_reason
+    )
 
-    if stop_reason == "max_tokens":
+    # Catch output truncation before attempting to parse — a truncated JSON
+    # array is the most common cause of parse failures on long threads.
+    if response.stop_reason == "max_tokens":
         print(
             f"\n  WARNING: response hit max_tokens ({MAX_TOKENS}) and was truncated. "
             f"Increase MAX_TOKENS or chunk the input. Returning 0 entities.",
@@ -106,11 +100,12 @@ def call_api(client, text: str) -> list[dict]:
         )
         return []
 
-    raw = "".join(chunks).strip()
+    raw = response.content[0].text.strip()
 
     # Strip accidental markdown fences
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
+
 
     try:
         entities = json.loads(raw)
