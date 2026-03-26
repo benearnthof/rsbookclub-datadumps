@@ -55,11 +55,12 @@ python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
 This will generate `preannotated.json` (also available as zstd compressed file in ./releases/labels/) which we can directly import to LabelStudio.
 
 TODO:  
-* Manually check all files that yielded 0 entities or returned with an api error.
+* Write script to get thread_ids for entities "on" "V" and "the" (and short, high frequency titles in general) -> needs fix ~2% of documents
 * Consolidate auto-generated labels with Open Library Data Dumps https://openlibrary.org/developers/dumps 
+* add special cases for greedy labeling with "on" "V" and "the"
+* Write scripts to automate integrating monthly reddit data dumps
 * Pretrain & finetune model for NER.
 * Train model for BOOK - WRITER link prediction
-* Write scripts to automate integrating monthly reddit data dumps
 
 Strategies (from lowest to highest cost):  
 * LoRA for NER fine-tuning only.  
