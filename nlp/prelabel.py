@@ -36,7 +36,7 @@ except ImportError:
     anthropic = None   # checked at runtime only when the extract phase runs
 
 MODEL          = "claude-haiku-4-5-20251001"
-MAX_TOKENS     = 8192 # max output tokens, 4096 covers like 99% of threads, even 8k still maxes out 5/11194 times.
+MAX_TOKENS     = 32768 # max output tokens, 4096 covers like 99% of threads, even 8k still maxes out 8/11194 times.
 REQUESTS_PER_MINUTE = 50        # stay well under tier-1 rate limit
 SLEEP_BETWEEN_CALLS = 60 / REQUESTS_PER_MINUTE   # ~1.2 s
 
@@ -81,18 +81,24 @@ Example output:
 def call_api(client, text: str) -> list[dict]:
     """
     Call the Claude API and return a list of {"text": ..., "label": ...} dicts.
+    Always uses streaming — required by the SDK for requests that may take
+    longer than 10 minutes (i.e. very long threads with large max_tokens).
     Returns an empty list on parse failure (logged to stderr).
     """
-    response = client.messages.create(
+    chunks: list[str] = []
+    stop_reason: str | None = None
+
+    with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": text}],
-    )
+    ) as stream:
+        for chunk in stream.text_stream:
+            chunks.append(chunk)
+        stop_reason = stream.get_final_message().stop_reason
 
-    # Catch output truncation before attempting to parse — a truncated JSON
-    # array is the most common cause of parse failures on long threads.
-    if response.stop_reason == "max_tokens":
+    if stop_reason == "max_tokens":
         print(
             f"\n  WARNING: response hit max_tokens ({MAX_TOKENS}) and was truncated. "
             f"Increase MAX_TOKENS or chunk the input. Returning 0 entities.",
@@ -100,7 +106,7 @@ def call_api(client, text: str) -> list[dict]:
         )
         return []
 
-    raw = response.content[0].text.strip()
+    raw = "".join(chunks).strip()
 
     # Strip accidental markdown fences
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
