@@ -14,7 +14,7 @@ from label_studio_sdk import LabelStudio # type: ignore
 API_URL = "http://localhost:8080"
 API_KEY = ""
 
-BAD_TERMS = set(["the", "THE", "The", "of", "Of"])
+BAD_TERMS = set(["t", "de", "f.","the", "THE", "The", "of", "Of", "of the", "in", "a", "A"])
 
 
 def main():
@@ -47,14 +47,14 @@ def main():
     clean_result = [r for r in preds.result if r["value"]["text"] not in BAD_TERMS]
     removed_count = original_count - len(clean_result)
 
-    print(f"\nOriginal: {original_count} | Removed: {removed_count} | Remaining: {len(clean_result)}")
+    print(f"\nOriginal: {original_count} Removed: {removed_count} Remaining: {len(clean_result)}")
 
     if args.dry_run:
-        print("Dry run — no changes written.")
+        print("no changes written.")
         sys.exit(0)
 
     if removed_count == 0:
-        print("Nothing to remove. Exiting.")
+        print("Nothing to remove.")
         sys.exit(0)
 
     print("Updating prediction...")
