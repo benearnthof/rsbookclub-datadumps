@@ -45,7 +45,7 @@ bad_terms = [
     "nin", "De", "DE", "de", "Dr.", "THE", "m.",
     "st.", "ali", "ee", "c.", "C.", "k." "K.", "in", "In", 
     "of", "Of", "der", "Der", "of the", "people", "on the", "just",
-    "eve", "A", "a", "t", "T",
+    "eve", "A", "a", "t", "T", "Tim", "Tom", "tim", "tom", "40"
 ]
 # documents that contain these in high frequency need manual checking
 # the 8 longest threads have been manually annotated anyway
