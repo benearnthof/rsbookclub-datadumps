@@ -43,7 +43,7 @@ Then we use the Claude-API to prelabel a subset of the 11k threads. Set your API
 ```bash
 python ./nlp/prelabel.py extract tasks.json extractions.jsonl --n 10
 ```
-This will query the API with the first 10 documents and save the corresponding extractions to extractions.jsonl. It should be noted, that one could probably cut down on token cost by cachign the system prompt but in total this cost me like $40 give or take so I just kept it as is for now. The number of monthly threads is also not too extreme.  
+This will query the API with the first 10 documents and save the corresponding extractions to extractions.jsonl. It should be noted, that one could probably cut down on token cost by caching the system prompt but in total this cost me like $40 give or take so I just kept it as is for now. The number of monthly threads is also not too extreme.  
 We can then proceed by calculating the respective span indices for each entity like so:
 ```bash
 python ./nlp/prelabel.py annotate tasks.json extractions.jsonl preannotated.json
@@ -52,7 +52,23 @@ Or, alternatively, we can do both subsequently in one command:
 ```bash
 python ./nlp/prelabel.py run tasks.json extractions.jsonl preannotated.json
 ```
-This will generate `preannotated.json` (also available as zstd compressed file in ./releases/labels/) which we can directly import to LabelStudio.
+This will generate `preannotated.json` (also available as zstd compressed file in ./releases/labels/) which we can directly import to LabelStudio.  
+Because Claude-Haiku, or any language model really, is not perfect, this will result in about 1.73% of the documents containing obvious errors like:
+```python
+["the", "The", "a", "A", ...]
+```
+being erroneously tagged as books or writers. Because of the greedy way in which we calculate label spans after receiving the pre-annotations from Claude-Haiku, this will cause some threads to be tagged with thousands of "A" book entities or similar. For the entire corpus this was an easy fix, we can first obtain a set of the `thread_id`s of the respective therads via tinkering with `./deprecated/false_positives.py`, and then automatically remove the selected labels with `python ./nlp/remove_labels.py --<TASK_ID>`. Note that here we use the TASK_ID we obtain from label studio, either via the API (refer to the label-studio docs or look at the example in the files mentioned above) or by tagging the metadata of the erroneous threads and filtering in the label-studio web interface. Either way we've removed false positives from the 194 culprits and adjusted the greedy span calculation to exclude the cases listed below for future threads.
+```python
+["the", "The", "par", "Par", "Don", "don", "on", "On", "st.", "ali", "ee", "c.", "C.", "k.", "K.", "in", "In", "of", "Of", "der", "Der", "of the", "people", "on the", "just", "lee", "de", "f.", "nin", "De", "DE", "de", "Dr.", "THE", "m.", "st.", "ali", "ee", "c.", "C.", "k." "K.", "in", "In", "of", "Of", "der", "Der", "of the", "people", "on the", "just", "eve", "A", "a", "t", "T", "Tim", "Tom", "tim", "tom", "40"]
+```
+Readers may note that this might lead to the partial elimination of correct labels or to false negatives in the worst case. We provide the dataset as is, as we're only interested in a rough explorative overview of the data at the moment, and since Book -> Writer disambiguation is relatively easy via context & the Open Library Data Dumps, and the combined error rate of ~1.73% * P(False Negative via Removal) we're satisfied for now. To combat false negatives we could run an exhaustive search against the OLDD, but this would most likely also not catch everything. Suggestions & pull requests are very welcome here.  
+To summarize the complete annotation process, we performed, in order:  
+1. Soft Labeling via Claude
+2. Greedy Span Calculation
+3. Programmatic removal of obvious false positives
+4. Manual check of ~ 1000 threads that yielded no labels for false negatives (~25 such threads actually contained false negatives)
+5. Visual check of threads impacted by obvious false positive removal
+6. TODO: Quick visual inspection of randomly sampled threads to get upper bound estimates on the remaining "hidden false positive" rate.
 
 TODO:  
 * Annotate longest thread manually
@@ -60,8 +76,8 @@ TODO:
 * Consolidate auto-generated labels with Open Library Data Dumps https://openlibrary.org/developers/dumps 
 * Adjust prelabeling to avoid obvious false positives in the future
 * Write scripts to automate integrating monthly reddit data dumps
-* Pretrain & finetune model for NER.
-* Train model for BOOK - WRITER link prediction (maybe jointly with NER)
+* Pretrain & finetune model custom model for NER.
+* Train model for BOOK - WRITER relation prediction (maybe jointly with NER)
 
 Strategies (from lowest to highest cost):  
 * LoRA for NER fine-tuning only.  
