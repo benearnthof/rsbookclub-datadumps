@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
 """
-Match OpenLibrary works against Label Studio tasks.
-This can be used for prelabeling, but we only use this to get a rough estimate
-for the number of spans that are of length 20 or longer & were not labeled.
-Anything shorter requires context to disambiguate common phrases from book titles.
-This should just serve as a rough quality check for false negatives. 
+Two-phase pipeline for matching OpenLibrary works against Label Studio tasks.
 
-Part 1: ingest to construct small database from OLDD dumps:
+Phase 1 — ingest (run once, ~30-60 min):
     python match_works.py ingest --works ol_dump_works_2026-02-28.txt --db ol_works.db
 
-Part 2: search through the database by ahocorasick string matching:
-    # TODO: Do this batch-wise so we don't have to construct the state machine anew for every single thread.
+Phase 2 — search:
     python match_works.py search --db ol_works.db --task 11199
     python match_works.py search --db ol_works.db --task 11199 --push
     python match_works.py search --db ol_works.db --all-tasks
     python match_works.py search --db ol_works.db --all-tasks --push
 """
-
 import re
 import sys
 import json
@@ -35,9 +29,8 @@ API_URL    = "http://localhost:8080"
 API_KEY    = ""
 PROJECT_ID = "8"
 LABEL_TYPE = "BOOK"
-BATCH_SIZE = 1_000_000  # The more RAM the larger this number the faster this script runs
+BATCH_SIZE = 1_000_000  # titles per automaton batch; reduce to 200_000 if still OOM
 
-# L20: min len 20 -> yields 390 candidates for longest task (11199), not all correct but usable.
 
 def ingest(works_path, db_path, min_len):
     print(f"Ingesting {works_path} → {db_path}  (min_len={min_len})")
@@ -241,6 +234,96 @@ def search_task(client, task, db_path, push, word_boundary):
     return len(novel)
 
 
+# batched search
+def fetch_all_tasks(client):
+    """Paginate through all tasks and return list of (task_id, thread_id, text, existing_spans)."""
+    print("Fetching all tasks from Label Studio...")
+    page, page_size = 1, 500
+    corpus = []
+    while True:
+        tasks = client.tasks.list(project=PROJECT_ID, page=page, page_size=page_size)
+        if not tasks.items:
+            break
+        for task in tasks.items:
+            existing_spans, _, _ = get_existing(task)
+            corpus.append({
+                "task_id":   task.id,
+                "thread_id": task.data.get("thread_id", ""),
+                "text":      task.data.get("text", ""),
+                "existing":  existing_spans,
+            })
+        print(f"  Fetched page {page} ({len(corpus)} tasks so far)...", end="\r")
+        if len(tasks.items) < page_size:
+            break
+        page += 1
+    print(f"\n  Done. {len(corpus)} tasks loaded.")
+    return corpus
+
+
+def bulk_search(client, db_path, output_path, word_boundary):
+    """
+    Outer loop: batches from DB.
+    Inner loop: all tasks.
+    Builds automaton once per batch, searches every task text.
+    Writes results to JSON.
+    """
+    corpus = fetch_all_tasks(client)
+
+    # Accumulate hits per task: task_id -> list of (start, end, matched, ol_key)
+    hits_by_task = {t["task_id"]: [] for t in corpus}
+
+    total_batches = 0
+    for batch in iter_title_batches(db_path, BATCH_SIZE):
+        total_batches += 1
+        A = build_automaton(batch)
+        batch_total = 0
+        for entry in corpus:
+            hits = search_automaton(entry["text"], A, word_boundary=word_boundary)
+            if hits:
+                hits_by_task[entry["task_id"]].extend(hits)
+                batch_total += len(hits)
+        del A
+        print(f"  Batch {total_batches}: {batch_total} raw hits across corpus", end="\r")
+    print(f"\n  Done. {total_batches} batches processed.")
+
+    # Deduplicate and filter novel hits per task
+    results = []
+    total_novel = 0
+    for entry in corpus:
+        task_id   = entry["task_id"]
+        thread_id = entry["thread_id"]
+        existing  = entry["existing"]
+
+        all_hits = keep_longest(hits_by_task[task_id])
+        novel    = [h for h in all_hits if is_novel(h, existing)]
+        total_novel += len(novel)
+
+        if novel:
+            results.append({
+                "task_id":   task_id,
+                "thread_id": thread_id,
+                "candidates": [
+                    {
+                        "start":   s,
+                        "end":     e,
+                        "text":    m,
+                        "ol_key":  ok,
+                        "length":  e - s,
+                    }
+                    for s, e, m, _, ok in sorted(novel, key=lambda x: -(x[1]-x[0]))
+                ]
+            })
+
+    # Sort output by number of candidates descending
+    results.sort(key=lambda x: -len(x["candidates"]))
+
+    import json as _json
+    with open(output_path, "w", encoding="utf-8") as f:
+        _json.dump(results, f, ensure_ascii=False, indent=2)
+
+    print(f"\nDone. {total_novel:,} novel candidates across {len(results)} tasks.")
+    print(f"Results written to: {output_path}")
+
 # cli
 def main():
     parser = argparse.ArgumentParser(description="OL works → Label Studio false-negative detector.")
@@ -258,6 +341,8 @@ def main():
     p2.add_argument("--all-tasks",        action="store_true", help="Search all tasks in project")
     p2.add_argument("--push",             action="store_true", help="Write novel hits to Label Studio")
     p2.add_argument("--no-word-boundary", action="store_true", help="Disable whole-word boundary check")
+    p2.add_argument("--output", type=str, default=None, metavar="FILE",
+                    help="Write bulk results to JSON (triggers optimised all-tasks mode)")
 
     args = parser.parse_args()
 
@@ -277,20 +362,23 @@ def main():
             search_task(client, task, args.db, push=args.push, word_boundary=wb)
 
         elif args.all_tasks:
-            page, page_size, total_novel = 1, 500, 0
-            while True:
-                tasks = client.tasks.list(project=PROJECT_ID, page=page, page_size=page_size)
-                if not tasks.items:
-                    break
-                for task in tasks.items:
-                    print(f"\n{'─'*60}")
-                    print(f"Task {task.id} | {task.data.get('thread_id')}")
-                    total_novel += search_task(client, task, args.db, push=args.push, word_boundary=wb)
-                if len(tasks.items) < page_size:
-                    break
-                page += 1
-            print(f"\nTotal novel candidates across all tasks: {total_novel:,}")
-
+            if args.output:
+                # one automaton build per batch, all tasks searched per batch
+                bulk_search(client, args.db, args.output, word_boundary=wb)
+            else:
+                page, page_size, total_novel = 1, 500, 0
+                while True:
+                    tasks = client.tasks.list(project=PROJECT_ID, page=page, page_size=page_size)
+                    if not tasks.items:
+                        break
+                    for task in tasks.items:
+                        print(f"\n{'─'*60}")
+                        print(f"Task {task.id} | {task.data.get('thread_id')}")
+                        total_novel += search_task(client, task, args.db, push=args.push, word_boundary=wb)
+                    if len(tasks.items) < page_size:
+                        break
+                    page += 1
+                print(f"\nTotal novel candidates across all tasks: {total_novel:,}")
 
 if __name__ == "__main__":
     main()
