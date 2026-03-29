@@ -15,12 +15,6 @@ with open("preannotated.json", "r", encoding="utf-8") as f:
 
 t0 = threads[0]
 
-# preds.keys()
-# Out[23]: dict_keys(['model_version', 'score', 'result'])
-
-# this is now a list of predictions, we want to count how often each label text appears
-# preds = t0["predictions"][0]["result"]
-
 from collections import Counter
 # counts = Counter([x["value"]["text"] for x in preds])
 
@@ -75,29 +69,6 @@ faulty_set = set(faulty_threads.keys())
 remaining_thread_ids = faulty_set - the_set
 # this should yield 30 extra threads. So the total error rate during prelabeling
 # was about 194/11196 = 1.73%
-
-# detailed_faults = {
-#     thread_id: {term: counter.get(term, 0) for term in bad_terms if counter.get(term, 0) > 0}
-#     for thread_id, counter in out.items()
-#     if any(counter.get(term, 0) > 0 for term in bad_terms)
-# }
-
-# # and since "V" gets labeled as faulty even in threads where only the Pynchon novel is labeled
-# # the actual error rate is even lower, so this is a conservative estimate.
-
-# export = [
-#     {
-#         "thread_id": thread_id,
-#         "errors": errors,
-#         "total_errors": sum(errors.values())
-#     }
-#     for thread_id, errors in detailed_faults.items()
-# ]
-
-# with open("detailed_faults.json", "w", encoding="utf-8") as f:
-#     json.dump(export, f, indent=2, ensure_ascii=False)
-
-# # using label-studio api to tag threads for manual review
 
 API_URL = "http://localhost:8080"
 API_KEY = ""
@@ -154,31 +125,3 @@ while True:
     page += 1
 
 print(f"\nDone. Total tagged: {tagged_count}")
-
-
-# for now we're gonna remove all the "the" entities from the bad threads
-# PROJECT_ID = "8"
-# TASK_ID = 8140
-# # bad_terms_set = set(["the", "The"])
-
-# task = client.tasks.get(id=TASK_ID)
-# print(f"Thread ID: {task.data.get('thread_id')}")
-# preds = task.predictions[0]
-# preds.result[-1]
-# len(preds.result)
-
-# from collections import Counter
-# out = Counter([x["value"]["text"] for x in preds.result])
-
-# # Filter out bad predictions
-# original_count = len(preds.result)
-# clean_result = [r for r in preds.result if r['value']['text'] not in bad_terms]
-# removed_count = original_count - len(clean_result)
-
-# print(f"Original: {original_count} | Removed: {removed_count} | Remaining: {len(clean_result)}")
-
-# updated_pred = client.predictions.update(
-#     id=preds.id,
-#     result=clean_result
-# )
-# print(f"Done. Prediction {preds.id} now has {len(updated_pred.result)} labels.")

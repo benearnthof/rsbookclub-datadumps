@@ -4,6 +4,10 @@
 corpus.txt
 releases/rsbookclub_comments.jsonl.zst
 releases/rsbookclub_submissions.jsonl.zst
+*.txt
+*.txt.gz
+*.db
+*.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
