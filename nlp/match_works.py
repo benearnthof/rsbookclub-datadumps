@@ -32,7 +32,7 @@ except ImportError:
     sys.exit(1)
 
 API_URL    = "http://localhost:8080"
-API_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4MTgwMzIxMCwiaWF0IjoxNzc0NjAzMjEwLCJqdGkiOiJjYzMxYmJiMmQ2NmE0NjA0YjljMDMxOTFkODBjODlmZCIsInVzZXJfaWQiOiIxIn0.MhEGA4uVO1zA3HSbkiEoZISVkBiOL4FfNu8GKElik2A"
+API_KEY    = ""
 PROJECT_ID = "8"
 LABEL_TYPE = "BOOK"
 BATCH_SIZE = 1_000_000  # The more RAM the larger this number the faster this script runs
