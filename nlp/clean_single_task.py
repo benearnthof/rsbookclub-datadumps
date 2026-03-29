@@ -13,7 +13,7 @@ Usage:
 import re
 import sys
 import argparse
-from label_studio_sdk import LabelStudio
+from label_studio_sdk import LabelStudio # type: ignore
 
 API_URL = "http://localhost:8080"
 API_KEY = ""

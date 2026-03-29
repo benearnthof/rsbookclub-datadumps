@@ -13,13 +13,12 @@ Usage:
 import argparse
 import csv
 from collections import Counter, defaultdict
-from label_studio_sdk import LabelStudio
+from label_studio_sdk import LabelStudio # type: ignore
 
 API_URL = "http://localhost:8080"
-API_KEY = ""
+API_KEY    = ""
 PROJECT_ID = "8"
-PAGE_SIZE = 100
-
+PAGE_SIZE = 1000
 
 def fetch_all_tasks(client):
     page = 1
@@ -38,7 +37,7 @@ def fetch_all_tasks(client):
 
 
 def get_results(task):
-    """Prefer human annotations if present, fall back to model predictions."""
+    """Prefer annotations if present, fall back to model predictions."""
     if task.annotations:
         valid = [a for a in task.annotations if not a.get("was_cancelled")]
         if valid:
@@ -117,8 +116,8 @@ def main():
     print("Computing statistics...")
     overall, by_label, skipped, source_counts = collect_stats(tasks)
 
-    print(f"  From human annotations : {source_counts['annotation']}")
-    print(f"  From model predictions : {source_counts['prediction']}")
+    print(f"  From annotations : {source_counts['annotation']}")
+    print(f"  From predictions : {source_counts['prediction']}")
     print(f"  Skipped (no labels)    : {skipped}")
     print(f"  Unique entity texts    : {len(overall)}")
     print(f"  Total label instances  : {sum(overall.values())}")

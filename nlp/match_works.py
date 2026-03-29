@@ -17,10 +17,10 @@ import json
 import uuid
 import sqlite3
 import argparse
-from label_studio_sdk import LabelStudio
+from label_studio_sdk import LabelStudio # type: ignore
 
 try:
-    import ahocorasick
+    import ahocorasick # type: ignore
 except ImportError:
     print("Missing dependency: pip install pyahocorasick")
     sys.exit(1)
