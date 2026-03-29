@@ -30,7 +30,7 @@ import os
 import sys
 from pathlib import Path
 
-from label_studio_sdk import LabelStudio
+from label_studio_sdk import LabelStudio # type: ignore
 
 API_URL    = "http://localhost:8080"
 API_KEY    = ""
