@@ -82,6 +82,7 @@ TODO:
 * Write scripts to automate integrating monthly reddit data dumps
 * Pretrain & finetune model custom model for NER.
 * Train model for BOOK - WRITER relation prediction (maybe jointly with NER)
+* Clean up repo (remove boilerplate from ./nlp etc.)
 
 Strategies (from lowest to highest cost):  
 * LoRA for NER fine-tuning only.  

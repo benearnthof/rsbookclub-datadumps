@@ -73,7 +73,7 @@ remaining_thread_ids = faulty_set - the_set
 API_URL = "http://localhost:8080"
 API_KEY = ""
 
-from label_studio_sdk import LabelStudio
+from label_studio_sdk import LabelStudio # type: ignore
 
 client = LabelStudio(
     base_url="http://localhost:8080",
