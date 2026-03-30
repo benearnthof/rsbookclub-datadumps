@@ -83,6 +83,7 @@ TODO:
 * Pretrain & finetune model custom model for NER.
 * Train model for BOOK - WRITER relation prediction (maybe jointly with NER)
 * Clean up repo (remove boilerplate from ./nlp etc.)
+* Clean up repo (group shell scripts & deprecate monolith_dl.sh)
 
 Strategies (from lowest to highest cost):  
 * LoRA for NER fine-tuning only.  

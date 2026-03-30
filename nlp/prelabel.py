@@ -31,7 +31,7 @@ import uuid
 from pathlib import Path
 
 try:
-    import anthropic
+    import anthropic # type: ignore
 except ImportError:
     anthropic = None   # checked at runtime only when the extract phase runs
 
