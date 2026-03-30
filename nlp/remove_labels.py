@@ -12,8 +12,7 @@ from collections import Counter
 from label_studio_sdk import LabelStudio # type: ignore
 
 API_URL = "http://localhost:8080"
-API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4MTgwMzIxMCwiaWF0IjoxNzc0NjAzMjEwLCJqdGkiOiJjYzMxYmJiMmQ2NmE0NjA0YjljMDMxOTFkODBjODlmZCIsInVzZXJfaWQiOiIxIn0.MhEGA4uVO1zA3HSbkiEoZISVkBiOL4FfNu8GKElik2A"
-
+API_KEY = ""
 BAD_TERMS = set(["t", "de", "f.","the", "THE", "The", "of", "Of", "of the", "in", "a", "A", "tim", "nin", "V", "nIn", "thomas", "leO", "Paul", "tIm", "Nin", "martin", "Leo", "V.", "Fire", "Alice", "Parable Of", "James", "Paul", "tom", "40", "Tim", "Nin", "Faust", "Young", "leo", "James", "appleinthedark"])
 
 

@@ -61,19 +61,23 @@ being erroneously tagged as books or writers. Because of the greedy way in which
 ```python
 ["the", "The", "par", "Par", "Don", "don", "on", "On", "st.", "ali", "ee", "c.", "C.", "k.", "K.", "in", "In", "of", "Of", "der", "Der", "of the", "people", "on the", "just", "lee", "de", "f.", "nin", "De", "DE", "de", "Dr.", "THE", "m.", "st.", "ali", "ee", "c.", "C.", "k." "K.", "in", "In", "of", "Of", "der", "Der", "of the", "people", "on the", "just", "eve", "A", "a", "t", "T", "Tim", "Tom", "tim", "tom", "40"]
 ```
-Readers may note that this might lead to the partial elimination of correct labels or to false negatives in the worst case. We provide the dataset as is, as we're only interested in a rough explorative overview of the data at the moment, and since Book -> Writer disambiguation is relatively easy via context & the Open Library Data Dumps, and the combined error rate of ~1.73% * P(False Negative via Removal) we're satisfied for now. To combat false negatives we could run an exhaustive search against the OLDD, but this would most likely also not catch everything. Suggestions & pull requests are very welcome here.  
+Readers may note that this might lead to the partial elimination of correct labels or to false negatives in the worst case. We provide the dataset as is, as we're only interested in a rough explorative overview of the data at the moment, and since Book -> Writer disambiguation is relatively easy via context & the Open Library Data Dumps, and the combined error rate of ~1.73% * P(False Negative via Removal) we're satisfied for now.  
+To combat false positives further, we manually checked around 300 unique threads containing any single or double letter entity. After performing this and before disambiguation, there are no longer any obvious false positives or outliers in the top 50 most popular entites, books, and writers -- both total and counted on a per-thread basis. We also performed a short exhaustive search for any book titles in the Open Library Data Dumps longer than 29 letters. We manually inspected about 1000 of the longest such proposals for false negatives. Of these, 708 were legitimate books in the context of their respective threads, 436 of these were already partially labeled by Claude-Haiku. This gives us a lower bound of the False Negative rate on the longest entity strings of about 1-(436/708) = 38.4%. Note, that as one decreases the minimum length in the exhaustive OLDD search, one must rely more and more on contextual information to distinguish between "Book" and "Non-Book", manually going through any book title proposals shorter than 30 characters would have already led to diminishing returns which is why we stopped here. 
+
 To summarize the complete annotation process, we performed, in order:  
 1. Soft Labeling via Claude
 2. Greedy Span Calculation
 3. Programmatic removal of obvious false positives
 4. Manual check of ~ 1000 threads that yielded no labels for false negatives (~25 such threads actually contained false negatives)
 5. Visual check of threads impacted by obvious false positive removal
-6. TODO: Quick visual inspection of randomly sampled threads to get upper bound estimates on the remaining "hidden false positive" rate.
+6. Manual inspection of single- & double letter entities  
+7. TODO: Plot entity frequency vs rank on log scale  
+8. TODO: Look at threads with unusually high entity density  
+9. TODO: Random sample of 100 threads to get final estimate on error rates  
+10. TODO: Entity disambiguation -> DFW & David Foster Wallace etc.
 
 TODO:  
-* Annotate longest thread manually
-* Write script to calculate label counts -> Weed out any remaining obvious false positives
-* Consolidate auto-generated labels with Open Library Data Dumps https://openlibrary.org/developers/dumps 
+* Compress & Release Dataset  
 * Adjust prelabeling to avoid obvious false positives in the future
 * Write scripts to automate integrating monthly reddit data dumps
 * Pretrain & finetune model custom model for NER.
@@ -86,6 +90,7 @@ Strategies (from lowest to highest cost):
 * LoRA-based DAPT: Continued pretraining on corpus updating only LoRA adapters. 
 
 ## Literature
+* Natural Language Annotation for Machine Learning, Pustejovsky & Stubbs (O'Reilly, 2012)  
 * DeBERTaV3: https://arxiv.org/abs/2111.09543  
 * Domain-adaptive pretraining these documents https://arxiv.org/pdf/2004.10964  
 * NER-BERT for small corpus NER https://arxiv.org/pdf/2112.00405  
