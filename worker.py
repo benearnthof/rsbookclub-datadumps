@@ -33,7 +33,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
-from tqdm import tqdm
+from tqdm import tqdm # type: ignore
 
 SUBREDDITS   = {"rsbookclub"}          # lower-cased subreddit names to keep
 FILTER_FIELD = "subreddit"             # JSON field to match against
@@ -72,7 +72,7 @@ def _iter_lines_pipe(file_path: Path):
 
 
 def _iter_lines_zstandard(file_path: Path):
-    import zstandard
+    import zstandard # type: ignore
 
     with open(file_path, "rb") as fh:
         reader = zstandard.ZstdDecompressor(max_window_size=MAX_WINDOW).stream_reader(fh)
