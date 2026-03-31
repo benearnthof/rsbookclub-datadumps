@@ -15,12 +15,15 @@ Usage:
 import argparse
 import csv
 from collections import Counter, defaultdict
-from label_studio_sdk import LabelStudio # type: ignore
+from label_studio_sdk import LabelStudio  # type: ignore
 
-API_URL = "http://localhost:8080"
+API_URL    = "http://localhost:8080"
 API_KEY    = ""
 PROJECT_ID = "8"
-PAGE_SIZE = 1000
+PAGE_SIZE  = 1000
+
+THREAD_ID_FIELD = "thread_id"
+
 
 def fetch_all_tasks(client):
     page = 1
@@ -57,11 +60,23 @@ def get_results(task):
 
 
 def collect_stats(tasks, unreviewed_only: bool, unique_threads: bool):
-    overall = Counter()
-    by_label = defaultdict(Counter)
-    skipped = 0
+    """
+    Returns
+    -------
+    overall : Counter  {text: total_count}
+    by_label : dict    {label: Counter{text: count}}
+    records  : list    one dict per (text, label, thread_id) combination:
+                         text, label, thread_id, doc_length, count
+    skipped, skipped_reviewed, source_counts
+    """
+    overall      = Counter()
+    by_label     = defaultdict(Counter)
+    raw_counts: Counter = Counter()   # (text, label, thread_id) -> count
+    doc_lengths: dict   = {}          # thread_id -> full document character length
+
+    skipped          = 0
     skipped_reviewed = 0
-    source_counts = Counter()
+    source_counts    = Counter()
 
     for task in tasks:
         if unreviewed_only and is_reviewed(task):
@@ -74,22 +89,45 @@ def collect_stats(tasks, unreviewed_only: bool, unique_threads: bool):
             continue
         source_counts[source] += 1
 
-        # In unique-threads mode each entity is counted at most once per task,
-        # no matter how many spans reference it in that task's annotations.
-        seen_in_task: set[str] = set()
+        data       = task.data or {}
+        thread_id  = data.get(THREAD_ID_FIELD, task.id)
+        doc_length = len(data.get("text", ""))
+        doc_lengths[thread_id] = doc_length
+
+        seen_in_task: set[tuple] = set()   # (text, label) pairs for unique-thread mode
+
         for result in results:
-            text = result["value"].get("text", "").strip()
-            labels = result["value"].get("labels", [])
+            value  = result["value"]
+            text   = value.get("text", "").strip()
+            labels = value.get("labels", [])
             if not text:
                 continue
-            if unique_threads and text in seen_in_task:
-                continue
-            seen_in_task.add(text)
-            overall[text] += 1
-            for label in labels:
-                by_label[label][text] += 1
 
-    return overall, by_label, skipped, skipped_reviewed, source_counts
+            for label in labels:
+                key = (text, label)
+                if unique_threads and key in seen_in_task:
+                    continue
+                seen_in_task.add(key)
+
+                overall[text] += 1
+                by_label[label][text] += 1
+                raw_counts[(text, label, thread_id)] += 1
+
+    # Build the flat record list from raw_counts
+    records = [
+        {
+            "text":       text,
+            "label":      label,
+            "thread_id":  thread_id,
+            "doc_length": doc_lengths.get(thread_id, 0),
+            "count":      count,
+        }
+        for (text, label, thread_id), count in raw_counts.items()
+    ]
+    # Sort by count descending for a predictable default order
+    records.sort(key=lambda r: r["count"], reverse=True)
+
+    return overall, by_label, records, skipped, skipped_reviewed, source_counts
 
 
 def print_table(counter, title, top_n, min_count):
@@ -112,28 +150,30 @@ def print_table(counter, title, top_n, min_count):
     print()
 
 
-def write_csv(overall, filepath, min_count):
-    rows = [(text, count) for text, count in overall.most_common() if count >= min_count]
+def write_csv(records, filepath, min_count):
+    """
+    Write one row per (text, label, thread_id) combination.
+    """
+    filtered   = [r for r in records if r["count"] >= min_count]
+    fieldnames = ["text", "label", "thread_id", "doc_length", "count"]
     with open(filepath, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
-        writer.writerow(["string", "count"])
-        writer.writerows(rows)
-    print(f"  CSV written to: {filepath} ({len(rows)} rows)")
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        writer.writerows(filtered)
+    print(f"  CSV written to: {filepath} ({len(filtered)} rows)")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Label Studio label frequency statistics.")
-    parser.add_argument("--top", type=int, default=50, help="Number of top terms to show (default: 50)")
-    parser.add_argument("--by-label", action="store_true", help="Show breakdown per label type")
-    parser.add_argument("--min-count", type=int, default=1, help="Minimum count to include a term")
-    parser.add_argument("--csv", type=str, default=None, metavar="FILE", help="Dump full frequency stats to CSV (e.g. stats.csv)")
-    parser.add_argument("--unreviewed", action="store_true",
-                        help="Only include tasks that have not yet received a human annotation "
-                             "(i.e. stats over model pre-labels only)")
+    parser.add_argument("--top",            type=int, default=50,   help="Number of top terms to show (default: 50)")
+    parser.add_argument("--by-label",       action="store_true",    help="Show breakdown per label type")
+    parser.add_argument("--min-count",      type=int, default=1,    help="Minimum count to include a term")
+    parser.add_argument("--csv",            type=str, default=None, metavar="FILE",
+                        help="Dump per-(text, label, thread_id) stats to CSV (e.g. stats.csv)")
+    parser.add_argument("--unreviewed",     action="store_true",
+                        help="Only include tasks that have not yet received a human annotation")
     parser.add_argument("--unique-threads", action="store_true",
-                        help="Count the number of distinct threads (tasks) each entity appears in, "
-                             "rather than total occurrences across all spans. Useful for comparing "
-                             "breadth of mention vs. raw frequency.")
+                        help="Count each (text, label) pair at most once per task/thread")
     args = parser.parse_args()
 
     client = LabelStudio(base_url=API_URL, api_key=API_KEY)
@@ -141,10 +181,11 @@ def main():
     print(f"Fetching all tasks from project {PROJECT_ID}...")
     tasks = fetch_all_tasks(client)
 
-    scope = "unreviewed tasks only" if args.unreviewed else "all tasks"
+    scope      = "unreviewed tasks only" if args.unreviewed else "all tasks"
     count_mode = "unique threads" if args.unique_threads else "total occurrences"
     print(f"Computing statistics ({scope}, {count_mode})...")
-    overall, by_label, skipped, skipped_reviewed, source_counts = collect_stats(
+
+    overall, by_label, records, skipped, skipped_reviewed, source_counts = collect_stats(
         tasks, args.unreviewed, args.unique_threads
     )
 
@@ -157,7 +198,7 @@ def main():
     print(f"  Total label instances  : {sum(overall.values())}")
 
     if args.csv:
-        write_csv(overall, args.csv, args.min_count)
+        write_csv(records, args.csv, args.min_count)
 
     print_table(
         overall,
