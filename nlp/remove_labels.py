@@ -13,7 +13,7 @@ from label_studio_sdk import LabelStudio # type: ignore
 
 API_URL = "http://localhost:8080"
 API_KEY = ""
-BAD_TERMS = set(["t", "de", "f.","the", "THE", "The", "of", "Of", "of the", "in", "a", "A", "tim", "nin", "V", "nIn", "thomas", "leO", "Paul", "tIm", "Nin", "martin", "Leo", "V.", "Fire", "Alice", "Parable Of", "James", "Paul", "tom", "40", "Tim", "Nin", "Faust", "Young", "leo", "James", "appleinthedark"])
+BAD_TERMS = set(["at"])
 
 
 def main():

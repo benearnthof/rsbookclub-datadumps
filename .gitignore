@@ -8,6 +8,8 @@ releases/rsbookclub_submissions.jsonl.zst
 *.txt.gz
 *.db
 *.csv
+ol.db-shm
+ol.db-wal
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

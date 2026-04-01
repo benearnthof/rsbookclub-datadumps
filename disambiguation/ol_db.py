@@ -1,5 +1,5 @@
 """
-Thin query layer over the ol.db SQLite database.
+ol_db.py  –  Thin query layer over the ol.db SQLite database.
 
 Provides:
   - exact / normalised title matching
@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 
+# ── Data classes ─────────────────────────────────────────────────────────────
+
 @dataclass
 class Author:
     ol_key: str
@@ -37,6 +39,8 @@ class Work:
     # Populated lazily via join
     authors: list[Author] = field(default_factory=list)
 
+
+# ── Normalisation helpers ────────────────────────────────────────────────────
 
 _STRIP_RE = re.compile(r"[^\w\s]", re.UNICODE)
 _WS_RE    = re.compile(r"\s+")
@@ -76,6 +80,8 @@ def title_acronym(title: str) -> str:
     return "".join(w[0].upper() for w in sig if w)
 
 
+# ── Database wrapper ──────────────────────────────────────────────────────────
+
 class OLDatabase:
     def __init__(self, db_path: str | Path):
         self._path = str(db_path)
@@ -88,6 +94,7 @@ class OLDatabase:
     def close(self):
         self._con.close()
 
+    # ── Authors ──────────────────────────────────────────────────────────────
 
     def get_author(self, ol_key: str) -> Optional[Author]:
         row = self._con.execute(
@@ -128,7 +135,22 @@ class OLDatabase:
             if normalize(r["name"]) == norm_target
         ]
 
+    @staticmethod
+    def _sanitize_fts(query: str) -> str:
+        """
+        Strip characters that are special in FTS5 query syntax so that
+        arbitrary surface forms (e.g. '1 Kings 11:3', 'C#', 'S.') don't
+        cause OperationalError.  We keep only word characters, digits,
+        apostrophes, and spaces, then collapse whitespace.
+        """
+        sanitized = re.sub(r"[^\w\s]", " ", query)
+        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        return sanitized
+
     def search_authors_fts(self, query: str, limit: int = 20) -> list[Author]:
+        query = self._sanitize_fts(query)
+        if not query:
+            return []
         rows = self._con.execute(
             """
             SELECT a.ol_key, a.name, a.alternate_names
@@ -142,6 +164,7 @@ class OLDatabase:
         ).fetchall()
         return [self._row_to_author(r) for r in rows]
 
+    # ── Works ────────────────────────────────────────────────────────────────
 
     def get_work(self, ol_key: str, with_authors: bool = False) -> Optional[Work]:
         row = self._con.execute(
@@ -191,6 +214,9 @@ class OLDatabase:
         return results
 
     def search_works_fts(self, query: str, limit: int = 20) -> list[Work]:
+        query = self._sanitize_fts(query)
+        if not query:
+            return []
         rows = self._con.execute(
             """
             SELECT w.ol_key, w.title, w.author_keys, w.subjects, w.description
@@ -204,6 +230,7 @@ class OLDatabase:
         ).fetchall()
         return [self._row_to_work(r) for r in rows]
 
+    # ── Joins ────────────────────────────────────────────────────────────────
 
     def get_authors_for_work(self, work_key: str) -> list[Author]:
         rows = self._con.execute(
@@ -230,6 +257,7 @@ class OLDatabase:
         ).fetchall()
         return [self._row_to_work(r) for r in rows]
 
+    # ── Acronym / initials resolution ────────────────────────────────────────
 
     def resolve_acronym_work(self, acronym: str, limit: int = 10) -> list[Work]:
         """
@@ -270,6 +298,7 @@ class OLDatabase:
         ]
         return results[:limit]
 
+    # ── Private helpers ──────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_json_list(raw) -> list:
@@ -299,41 +328,28 @@ class OLDatabase:
         )
 
 
+# ── Quick smoke-test ─────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     import sys
     db_path = sys.argv[1] if len(sys.argv) > 1 else "ol.db"
     db = OLDatabase(db_path)
 
-    print("Writer:")
-    for w in db.find_works_normalized("Paraliterary"):
-        if w.author_keys:
-            author = db.get_author(w.author_keys[0])
-            if not author:
-                author = Author("None", "None", ["None"])
-        print(f"{w.ol_key}  {w.title!r}  {author.name}")
+    print("=== Exact title: 'Infinite Jest' ===")
+    for w in db.find_works_normalized("Infinite Jest"):
+        authors = db.get_authors_for_work(w.ol_key)
+        print(f"  {w.ol_key}  {w.title!r}  authors={[a.name for a in authors]}")
 
-    # print("\nWorks for Writer:")
-    # w = db.get_author("/authors/OL1433006A")
-    # print(f"{w!r}")
+    print("\n=== Acronym work: IJ ===")
+    for w in db.resolve_acronym_work("IJ"):
+        print(f"  {w.ol_key}  {w.title!r}")
+
+    print("\n=== Acronym author: DFW ===")
+    for a in db.resolve_acronym_author("DFW"):
+        print(f"  {a.ol_key}  {a.name!r}")
+
+    print("\n=== FTS author: Wallace ===")
+    for a in db.search_authors_fts("Wallace", limit=5):
+        print(f"  {a.ol_key}  {a.name!r}")
 
     db.close()
-
-# What seems to be robust enough is looking for writers via fts
-# then selecting whomever has the most published works
-# since we're interested in a top 100 list this should be sufficient
-# doesnt work for "Fisher". 
-# We need thread level information
-# Well technically we're only interested in the top 100 books. 
-# Any writer information will be available for free.
-# Don't need anything fancy, just reliable book disambiguation & lookup.
-# if normalized author.name exists in thread we can be pretty sure 
-# we found the correct writer.
-# We can brute force normalization for the top 100 writer entities
-# should be quick just go by popularity and when in doubt 
-# do the same we do for books but inverse
-
-# probably need to do it iteratively. 
-# -> Exact Map first
-# -> Exact DB lookup + Thread Info
-# -> Normalized DB Lookup + Thread Info
-# -> Check how many couldn't be resolved
