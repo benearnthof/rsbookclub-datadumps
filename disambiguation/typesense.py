@@ -1,106 +1,141 @@
 """
-query_typesense.py
-------------------
-For each surface string in still_failed.csv, loads the Typesense books
-search page and collects every OpenLibrary key from the result links.
-
-Output: typesense_ol_keys.csv  with columns:
-    surface, ol_keys (pipe-separated), n_hits, notes
+query_typesense.py  (async edition)
+------------------------------------
+Scrapes OL keys from books-search.typesense.org for every surface string
+in still_failed.csv, using a pool of concurrent Playwright pages.
 
 Install:
     pip install playwright pandas
     playwright install chromium
 
 Usage:
-    python query_typesense.py --csv still_failed.csv --n 5
-    python query_typesense.py --csv still_failed.csv          # full run
-    python query_typesense.py --csv still_failed.csv --headed # show browser
+    python query_typesense.py --csv still_failed.csv --n 20 --workers 8
+    python query_typesense.py --csv still_failed.csv            # full run
+    python query_typesense.py --csv still_failed.csv --headed   # debug
+
+Tune --workers to your machine / connection. 8-12 is a good starting point;
+go higher if CPU/RAM allow and you see no errors.
 """
 
 import argparse
+import asyncio
 import re
-import time
 import random
-from urllib.parse import quote
+import time
 from pathlib import Path
+from urllib.parse import quote
+
 import pandas as pd
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 
 
 # ── config ────────────────────────────────────────────────────────────────────
 
-BASE_URL     = "https://books-search.typesense.org/"
-OUTPUT_CSV   = "typesense_ol_keys.csv"
-SKIP_NOTES   = {"SCRIPTURE"}
-DELAY_MIN    = 1.5          # seconds between page loads
-DELAY_MAX    = 3.0
-OL_KEY_RE    = re.compile(r"/(OL\d+[MWA])")   # matches /OL28368134M  /OL123W etc.
+BASE_URL   = "https://books-search.typesense.org/"
+OUTPUT_CSV = "typesense_ol_keys.csv"
+SKIP_NOTES = {"SCRIPTURE"}
+OL_KEY_RE  = re.compile(r"/(OL\d+[MWA])")
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── per-page worker ───────────────────────────────────────────────────────────
 
 def search_url(surface: str) -> str:
-    """Build the Typesense search URL for a surface string."""
     cleaned = surface.strip().strip('"').strip("'").strip()
     return f"{BASE_URL}?b%5Bquery%5D={quote(cleaned)}"
 
 
-def extract_ol_keys(page) -> list[str]:
-    """Return all unique OL keys found in openlibrary.org links on the page."""
-    keys = []
-    seen = set()
-    for el in page.locator("a[href*='openlibrary.org']").all():
-        href = el.get_attribute("href") or ""
-        m    = OL_KEY_RE.search(href)
-        if m:
-            key = m.group(1)
-            if key not in seen:
-                seen.add(key)
-                keys.append(key)
+async def extract_ol_keys(page) -> list[str]:
+    keys, seen = [], set()
+    for el in await page.locator("a[href*='openlibrary.org']").all():
+        href = await el.get_attribute("href") or ""
+        m = OL_KEY_RE.search(href)
+        if m and (key := m.group(1)) not in seen:
+            seen.add(key)
+            keys.append(key)
     return keys
 
 
-def query_surface(page, surface: str) -> dict:
-    url    = search_url(surface)
+async def query_surface(page, surface: str) -> dict:
     result = {"surface": surface, "ol_keys": [], "error": None}
-
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-        # wait for at least one OL link — or timeout after 8 s (no results is fine)
+        await page.goto(search_url(surface), wait_until="domcontentloaded",
+                        timeout=20_000)
         try:
-            page.wait_for_selector("a[href*='openlibrary.org']", timeout=8_000)
+            await page.wait_for_selector("a[href*='openlibrary.org']",
+                                         timeout=8_000)
         except PWTimeout:
-            pass   # genuinely no results — not an error
-
-        result["ol_keys"] = extract_ol_keys(page)
-        print(f"  ✓  {len(result['ol_keys'])} OL keys")
-
+            pass  # genuine no-results — not an error
+        result["ol_keys"] = await extract_ol_keys(page)
     except PWTimeout:
         result["error"] = "timeout"
-        print("  ✗  timeout")
     except Exception as exc:
         result["error"] = str(exc)
-        print(f"  ✗  {exc}")
-
     return result
+
+
+# ── worker pool ───────────────────────────────────────────────────────────────
+
+async def worker(
+    worker_id: int,
+    queue: asyncio.Queue,
+    context,
+    write_lock: asyncio.Lock,
+    out_path: Path,
+    counters: dict,
+    total: int,
+):
+    page = await context.new_page()
+
+    while True:
+        try:
+            row = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
+
+        surface = row.surface
+        notes   = getattr(row, "notes", "")
+
+        result = await query_surface(page, surface)
+
+        # ── crash-safe append ─────────────────────────────────────────
+        out_row = pd.DataFrame([{
+            "surface": surface,
+            "ol_keys": "|".join(result["ol_keys"]),
+            "n_hits":  len(result["ol_keys"]),
+            "error":   result["error"] or "",
+            "notes":   notes,
+        }])
+        async with write_lock:
+            out_row.to_csv(
+                out_path,
+                mode="a",
+                header=not out_path.exists(),
+                index=False,
+            )
+            counters["done"] += 1
+            done = counters["done"]
+
+        # ── progress line ─────────────────────────────────────────────
+        status = f"{len(result['ol_keys'])} keys" if not result["error"] \
+                 else f"ERR:{result['error']}"
+        pct = done / total * 100
+        print(f"  [{done:>5}/{total}  {pct:4.1f}%]  w{worker_id}  "
+              f"{surface[:50]:<50}  {status}")
+
+        queue.task_done()
+
+        # small per-worker jitter so pages don't all fire simultaneously
+        await asyncio.sleep(random.uniform(0.3, 0.8))
+
+    await page.close()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--csv",       default="still_failed.csv")
-    parser.add_argument("--n",         type=int,   default=None,
-                        help="Limit rows (omit for full run)")
-    parser.add_argument("--delay-min", type=float, default=DELAY_MIN)
-    parser.add_argument("--delay-max", type=float, default=DELAY_MAX)
-    parser.add_argument("--headed",    action="store_true")
-    parser.add_argument("--output",    default=OUTPUT_CSV)
-    args = parser.parse_args()
-
-    # ── load & filter ──────────────────────────────────────────────────────
+async def run(args):
+    # ── load CSV ───────────────────────────────────────────────────────
     df = pd.read_csv(args.csv)
-    print(f"Loaded {len(df)} rows")
+    print(f"Loaded {len(df)} rows from {args.csv}")
 
     if "notes" in df.columns:
         before = len(df)
@@ -110,72 +145,87 @@ def main():
     if args.n:
         df = df.head(args.n)
 
-    print(f"Querying {len(df)} surfaces  "
-          f"(delay {args.delay_min}–{args.delay_max}s, headed={args.headed})\n")
-
-    # ── resume support: skip already-done surfaces ─────────────────────────
-    done = set()
+    # ── resume: skip already-done surfaces ────────────────────────────
     out_path = Path(args.output)
+    done_surfaces = set()
     if out_path.exists():
         done_df = pd.read_csv(out_path)
-        done    = set(done_df["surface"].tolist())
-        print(f"Resuming — {len(done)} surfaces already in {args.output}\n")
+        done_surfaces = set(done_df["surface"].tolist())
+        print(f"Resuming — {len(done_surfaces)} surfaces already done")
 
-    rows = [row for row in df.itertuples() if row.surface not in done]
-    print(f"{len(rows)} surfaces left to query\n")
+    rows = [row for row in df.itertuples() if row.surface not in done_surfaces]
+    if not rows:
+        print("Nothing left to do.")
+        return
 
-    # ── browser ────────────────────────────────────────────────────────────
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
+    total = len(rows)
+    print(f"Querying {total} surfaces with {args.workers} workers\n")
+
+    # ── fill queue ────────────────────────────────────────────────────
+    queue = asyncio.Queue()
+    for row in rows:
+        await queue.put(row)
+
+    write_lock = asyncio.Lock()
+    counters   = {"done": 0}
+    t0         = time.monotonic()
+
+    # ── launch browser + worker pool ──────────────────────────────────
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
             headless=not args.headed,
             args=["--no-sandbox"],
         )
-        ctx  = browser.new_context(
+        context = await browser.new_context(
             viewport={"width": 1280, "height": 900},
             locale="en-US",
         )
-        page = ctx.new_page()
 
-        for i, row in enumerate(rows, start=1):
-            surface = row.surface
-            notes   = getattr(row, "notes", "")
-            print(f"[{i}/{len(rows)}] {surface!r}")
-
-            result = query_surface(page, surface)
-
-            # ── append to CSV immediately (crash-safe) ─────────────────
-            out_row = pd.DataFrame([{
-                "surface":  surface,
-                "ol_keys":  "|".join(result["ol_keys"]),
-                "n_hits":   len(result["ol_keys"]),
-                "error":    result["error"] or "",
-                "notes":    notes,
-            }])
-            out_row.to_csv(
-                args.output,
-                mode="a",
-                header=not out_path.exists(),
-                index=False,
+        workers = [
+            asyncio.create_task(
+                worker(i + 1, queue, context, write_lock,
+                       out_path, counters, total)
             )
-            out_path = Path(args.output)   # ensure exists flag updates
+            for i in range(min(args.workers, total))
+        ]
+        await asyncio.gather(*workers)
+        await browser.close()
 
-            if i < len(rows):
-                time.sleep(random.uniform(args.delay_min, args.delay_max))
+    elapsed = time.monotonic() - t0
+    per_q   = elapsed / total if total else 0
 
-        browser.close()
-
-    # ── final summary ──────────────────────────────────────────────────────
-    final   = pd.read_csv(args.output)
-    ok      = (final["error"] == "").sum()
-    no_hits = (final["n_hits"] == 0).sum()
+    # ── final summary ─────────────────────────────────────────────────
+    final   = pd.read_csv(out_path)
     errors  = (final["error"] != "").sum()
-    print(f"\n── Done ────────────────────────────────────────────────────")
-    print(f"  total rows written : {len(final)}")
-    print(f"  with OL keys       : {ok - no_hits}")
-    print(f"  no results (ok)    : {no_hits}")
-    print(f"  errors             : {errors}")
-    print(f"  output             : {args.output}")
-    print(f"────────────────────────────────────────────────────────────")
+    no_hits = (final["n_hits"] == 0).sum()
+    with_keys = (final["n_hits"] > 0).sum()
+
+    print(f"\n── Done in {elapsed:.1f}s  ({per_q:.2f}s/query) {'─'*30}")
+    print(f"  with OL keys  : {with_keys}")
+    print(f"  no results    : {no_hits}")
+    print(f"  errors        : {errors}")
+    print(f"  output        : {out_path}")
+    if errors:
+        err_surfaces = final[final["error"] != ""]["surface"].tolist()
+        print(f"\n  Failed surfaces (consider retry):")
+        for s in err_surfaces[:10]:
+            print(f"    {s}")
+        if len(err_surfaces) > 10:
+            print(f"    … and {len(err_surfaces) - 10} more")
+    print("─" * 50)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv",     default="still_failed.csv")
+    parser.add_argument("--n",       type=int, default=None,
+                        help="Limit to first N rows (omit for full run)")
+    parser.add_argument("--workers", type=int, default=8,
+                        help="Concurrent browser pages (default: 8)")
+    parser.add_argument("--headed",  action="store_true")
+    parser.add_argument("--output",  default=OUTPUT_CSV)
+    args = parser.parse_args()
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":
