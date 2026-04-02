@@ -335,21 +335,7 @@ if __name__ == "__main__":
     db_path = sys.argv[1] if len(sys.argv) > 1 else "ol.db"
     db = OLDatabase(db_path)
 
-    print("=== Exact title: 'Infinite Jest' ===")
-    for w in db.find_works_normalized("Infinite Jest"):
-        authors = db.get_authors_for_work(w.ol_key)
-        print(f"  {w.ol_key}  {w.title!r}  authors={[a.name for a in authors]}")
-
-    print("\n=== Acronym work: IJ ===")
-    for w in db.resolve_acronym_work("IJ"):
-        print(f"  {w.ol_key}  {w.title!r}")
-
-    print("\n=== Acronym author: DFW ===")
-    for a in db.resolve_acronym_author("DFW"):
-        print(f"  {a.ol_key}  {a.name!r}")
-
-    print("\n=== FTS author: Wallace ===")
-    for a in db.search_authors_fts("Wallace", limit=5):
-        print(f"  {a.ol_key}  {a.name!r}")
+    w = db.get_work("OL29293117M")
+    print(w)
 
     db.close()

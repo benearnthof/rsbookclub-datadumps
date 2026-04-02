@@ -232,10 +232,12 @@ if __name__ == "__main__":
     main()
 
 # This is very ugly, we should instead do this locally. 
-# TODO: add progress bar with ETA
 # TODO: After we obtain the OL keys for every of these we go back to the threads the strings came from.
 # Or rather, we run the disambiguation again, with a 5th step, that looks up the OL keys in the 
 # generated typesense_ol_keys.csv, queries the database with them, and checks context for any 
 # writers present. If there are we found a match, if not we cannot match this with elastic search
 # and will thus discard the entity string at last. 
 # we could probably perform this asynchronously to massively speed things up. 
+# TODO: to resolve the editions keys correctly we need the editions part of the OLDD 
+# We're using the 2026-02-28 dumps available here https://archive.org/details/ol_exports?sort=-publicdate
+# Downloaded via the .torrent available on the site linked above.

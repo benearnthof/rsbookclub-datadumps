@@ -1,11 +1,2 @@
-Process files older than 2025-01 available here https://academictorrents.com/details/3e3f64dee22dc304cdd2546254ca1f8e8ae542b4
-Preprocess Data:
-  Unpack & Filter 
-  Flatten Threads
-Begin Labeling
-  Zeroshot a couple hundred threads
-  Doublecheck results
-Finetune DeBERTa-v3-large:
-  Pretrain for a bit on the entire corpus
-  Then begin finetuning & evaluating on rest of threads => need a holdout set for evaluation
-  Maybe just zeroshot the entire thing, should cost like $50 give or take
+after enriching the work titles into enriched_surfaces we need one final processing step to obtain 
+canonical titles we can then collect all data.
