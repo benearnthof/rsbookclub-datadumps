@@ -1,2 +1,1 @@
-after enriching the work titles into enriched_surfaces we need one final processing step to obtain 
-canonical titles we can then collect all data.
+rerun entity linking with finished lookup table
