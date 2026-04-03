@@ -9,7 +9,7 @@ Produces:
   - output/top100_comparison.csv   — both rankings side by side
 """
 
-import pandas as pd
+import pandas as pd # type: ignore
 from pathlib import Path
 
 # output2 contains fully disambiguated data
@@ -107,10 +107,10 @@ top_raw[top_raw["canonical_title"] == "V."]
 top_raw.tail(5)
 top_1k = top_raw.head(1200)
 
-import numpy as np
+import numpy as np # type: ignore
 import re
 import unicodedata
-import pandas as pd
+import pandas as pd # type: ignore
 
 LEADING_ARTICLES = re.compile(r"^(the|a|an)\s+", re.IGNORECASE)
 PUNCTUATION      = re.compile(r"[^\w\s]")
