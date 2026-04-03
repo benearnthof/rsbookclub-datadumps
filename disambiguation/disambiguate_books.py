@@ -2,12 +2,14 @@
 disambiguate_books.py
 ─────────────────────
 Resolves BOOK entity surface forms from the Label Studio export to
-Open Library work keys, using a four-stage cascade:
+Open Library work keys, using a six-stage cascade:
 
   1. Acronym lookup        (acronyms.json, subreddit-specific, exact)
   2. Exact DB lookup       (works.title == surface form)
   3. Normalised DB lookup  (unicode/punct/case folded)
-  4. Failed → failed_lookup.csv  for manual review
+  4. Fuzzy pre-resolved    (fuzzy_resolved.csv, pre-computed fuzzy matches)
+  5. Canonical lookup      (canonical_lookup.csv, manual / FTS overrides)
+  6. Failed → failed_lookup.csv  for manual review
 
 Thread context is used to boost or confirm candidates:
   - A WRITER entity in the same annotation that matches an author
@@ -31,6 +33,11 @@ Usage
       --acronyms acronyms.json \
       --out-dir  ./output
 
+  # With post-processing lookup tables:
+  python disambiguate_books.py ... \
+      --fuzzy-resolved  ./output/fuzzy_resolved.csv \
+      --canonical-lookup ./canonical_lookup.csv
+
   # Quick smoke-test on first 25 unique surface forms:
   python disambiguate_books.py ... --smoke-test
 """
@@ -52,7 +59,7 @@ except ImportError:
     tqdm = None
 
 # ol_db.py must be on the path (same directory or installed)
-from oldb import OLDatabase, Work, Author, normalize
+from ol_db import OLDatabase, Work, Author, normalize
 
 logging.basicConfig(
     level=logging.INFO,
@@ -81,7 +88,8 @@ class RawEntity:
 @dataclass
 class Resolution:
     surface:        str
-    method:         str             # 'acronym' | 'exact' | 'normalized' | 'failed'
+    method:         str             # 'acronym' | 'exact' | 'normalized' |
+                                    # 'fuzzy' | 'alias' | 'canonical_*' | 'failed'
     ol_key:         Optional[str]   # /works/OL…W
     canonical_title: Optional[str]
     author_name:    Optional[str]   # first author if available
@@ -204,7 +212,7 @@ def rank_candidates(surface: str,
     return scored
 
 
-# ── Resolution stages ─────────────────────────────────────────────────────────
+# ── Resolution stages 1–3 ─────────────────────────────────────────────────────
 
 def resolve_via_acronym(surface: str,
                         acronyms: dict,
@@ -290,32 +298,217 @@ def _build_resolution(surface: str,
     )
 
 
+# ── Post-processing loaders ───────────────────────────────────────────────────
+
+def load_fuzzy_resolved(path: Path) -> dict[str, dict]:
+    """
+    Load fuzzy_resolved.csv into a surface → row dict.
+
+    Columns expected:
+        surface, method, ol_key, canonical_title, author_name,
+        fuzzy_score, ambiguous, notes
+
+    Alias rows (method == 'alias') that lack an ol_key are kept as-is;
+    resolve_via_fuzzy will attempt a DB lookup on the canonical title.
+    """
+    lookup: dict[str, dict] = {}
+    if not path.exists():
+        log.warning("fuzzy_resolved file not found: %s — stage 4 disabled", path)
+        return lookup
+    with path.open("r", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            surface = row["surface"].strip()
+            if surface:
+                lookup[surface] = row
+    log.info("Loaded %d fuzzy-resolved entries from %s", len(lookup), path.name)
+    return lookup
+
+
+def load_canonical_lookup(path: Path) -> dict[str, dict]:
+    """
+    Load canonical_lookup.csv into a surface → row dict.
+
+    Columns expected:
+        surface, canonical_title, work_key, method, score
+
+    Rows where work_key is empty *and* method is 'unresolved' are skipped
+    because they carry no actionable information.
+    """
+    lookup: dict[str, dict] = {}
+    if not path.exists():
+        log.warning("canonical_lookup file not found: %s — stage 5 disabled", path)
+        return lookup
+    skipped = 0
+    with path.open("r", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            surface = row["surface"].strip()
+            if not surface:
+                continue
+            work_key = row.get("work_key", "").strip()
+            method   = row.get("method",   "").strip().lower()
+            if not work_key and method == "unresolved":
+                skipped += 1
+                continue
+            lookup[surface] = row
+    log.info(
+        "Loaded %d canonical-lookup entries from %s (%d unresolved/empty skipped)",
+        len(lookup), path.name, skipped,
+    )
+    return lookup
+
+
+# ── Resolution stages 4–5 ─────────────────────────────────────────────────────
+
+def resolve_via_fuzzy(surface: str,
+                      fuzzy_lookup: dict[str, dict],
+                      db: OLDatabase,
+                      context_writers: set[str]) -> Optional[Resolution]:
+    """
+    Stage 4 — fuzzy pre-computed lookup.
+
+    For alias rows that have no ol_key, a normalised DB lookup is attempted
+    on the canonical title so the ol_key can be populated where possible.
+    """
+    row = fuzzy_lookup.get(surface)
+    if row is None:
+        return None
+
+    method          = row.get("method",          "fuzzy").strip() or "fuzzy"
+    ol_key          = row.get("ol_key",          "").strip() or None
+    canonical_title = row.get("canonical_title", "").strip() or None
+    author_name     = row.get("author_name",     "").strip() or None
+    ambiguous = str(row.get("ambiguous", "False")).strip().lower() in ("true", "1", "yes")
+
+    try:
+        score = float(row.get("fuzzy_score", 0.0))
+    except ValueError:
+        score = 0.0
+    confidence = round(score / 100.0, 3)
+
+    # For alias entries without an ol_key, try a DB lookup on the resolved title
+    if method == "alias" and ol_key is None and canonical_title:
+        works = db.find_works_normalized(canonical_title)
+        if works:
+            ranked = rank_candidates(canonical_title, works, db, context_writers)
+            if ranked:
+                best_work, _ = ranked[0]
+                ol_key = best_work.ol_key
+                if not author_name and best_work.author_keys:
+                    author = db.get_author(best_work.author_keys[0])
+                    author_name = author.name if author else None
+
+    notes = row.get("notes", "").strip()
+    notes = f"fuzzy:{notes}" if notes else "fuzzy"
+
+    return Resolution(
+        surface         = surface,
+        method          = method,       # preserves 'alias' | 'fuzzy' | etc.
+        ol_key          = ol_key,
+        canonical_title = canonical_title,
+        author_name     = author_name,
+        confidence      = confidence,
+        ambiguous       = ambiguous,
+        notes           = notes,
+    )
+
+
+def resolve_via_canonical(surface: str,
+                           canonical_lookup: dict[str, dict],
+                           db: OLDatabase,
+                           context_writers: set[str]) -> Optional[Resolution]:
+    """
+    Stage 5 — manual/FTS canonical lookup.
+
+    Rows are accepted when work_key is present, or when a canonical_title
+    is given that can be found in the DB (the loader already drops empty-key
+    unresolved rows, but a title-only row can still yield a key here).
+    """
+    row = canonical_lookup.get(surface)
+    if row is None:
+        return None
+
+    canonical_title = row.get("canonical_title", "").strip() or None
+    work_key        = row.get("work_key",        "").strip() or None
+    method_src      = row.get("method",          "").strip().lower() or "canonical"
+    try:
+        score = float(row.get("score", 0.0))
+    except ValueError:
+        score = 0.0
+    confidence = round(score / 100.0, 3)
+
+    # If we have a title but no key, attempt one last DB lookup
+    if work_key is None and canonical_title:
+        works = db.find_works_normalized(canonical_title)
+        if works:
+            ranked = rank_candidates(canonical_title, works, db, context_writers)
+            if ranked:
+                best_work, best_score = ranked[0]
+                work_key   = best_work.ol_key
+                confidence = round(best_score, 3)
+
+    # Try to pull author from DB for completeness
+    author_name = None
+    if work_key and canonical_title:
+        works = db.find_works_exact(canonical_title)
+        for w in works:
+            if w.ol_key == work_key and w.author_keys:
+                author = db.get_author(w.author_keys[0])
+                author_name = author.name if author else None
+                break
+
+    return Resolution(
+        surface         = surface,
+        method          = f"canonical_{method_src}",
+        ol_key          = work_key,
+        canonical_title = canonical_title,
+        author_name     = author_name,
+        confidence      = confidence,
+        ambiguous       = False,
+        notes           = f"canonical:{method_src};score={score:.1f}",
+    )
+
+
 # ── Main pipeline ────────────────────────────────────────────────────────────
 
-def _make_postfix(n_acronym: int, n_exact: int,
-                  n_norm: int, n_failed: int) -> dict:
+def _make_postfix(n_acronym: int, n_exact: int, n_norm: int,
+                  n_fuzzy: int, n_canonical: int, n_failed: int) -> dict:
     """Compact tqdm postfix dict showing live resolution breakdown."""
     return {
-        "acr": n_acronym,
-        "exact": n_exact,
+        "acr":  n_acronym,
+        "ex":   n_exact,
         "norm": n_norm,
+        "fuzz": n_fuzzy,
+        "can":  n_canonical,
         "fail": n_failed,
     }
 
 
-def disambiguate_books(entities:    list[RawEntity],
-                       thread_idx:  dict[str, list[RawEntity]],
-                       db:          OLDatabase,
-                       acronyms:    dict,
-                       smoke_test:  bool = False) -> dict[str, Resolution]:
+def disambiguate_books(entities:         list[RawEntity],
+                       thread_idx:       dict[str, list[RawEntity]],
+                       db:               OLDatabase,
+                       acronyms:         dict,
+                       fuzzy_lookup:     dict[str, dict] | None = None,
+                       canonical_lookup: dict[str, dict] | None = None,
+                       smoke_test:       bool = False) -> dict[str, Resolution]:
     """
     Resolve every unique BOOK surface form.
     Returns surface_form → Resolution mapping.
+
+    Resolution cascade:
+        1. Acronym lookup
+        2. Exact DB lookup
+        3. Normalised DB lookup
+        4. Fuzzy pre-resolved  (fuzzy_lookup, optional)
+        5. Canonical lookup    (canonical_lookup, optional)
+        6. Failed
 
     If smoke_test=True, only the first SMOKE_TEST_LIMIT unique surface forms
     (alphabetical) are processed so you can check for errors and estimate
     per-form runtime before committing to the full run.
     """
+    fuzzy_lookup     = fuzzy_lookup     or {}
+    canonical_lookup = canonical_lookup or {}
+
     book_entities = [e for e in entities if e.label == "BOOK"]
     n_unique = len({e.text for e in book_entities})
     log.info("Raw BOOK entities: %d  |  Unique surface forms: %d",
@@ -334,7 +527,7 @@ def disambiguate_books(entities:    list[RawEntity],
                  len(all_surfaces))
 
     resolutions: dict[str, Resolution] = {}
-    n_acronym = n_exact = n_norm = n_failed = 0
+    n_acronym = n_exact = n_norm = n_fuzzy = n_canonical = n_failed = 0
     t_start   = time.perf_counter()
 
     # ── Progress bar setup ───────────────────────────────────────────────────
@@ -360,68 +553,82 @@ def disambiguate_books(entities:    list[RawEntity],
         for tid in task_ids:
             context_writers |= writer_names_in_task(tid, thread_idx)
 
-        # Stage 1: acronym
+        # ── Stage 1: acronym ─────────────────────────────────────────────────
         res = resolve_via_acronym(surface, acronyms, db)
         if res:
             n_acronym += 1
-            resolutions[surface] = res
         else:
-            # Stage 2: exact
+            # ── Stage 2: exact ───────────────────────────────────────────────
             res = resolve_via_exact(surface, db, context_writers)
             if res:
                 n_exact += 1
-                resolutions[surface] = res
             else:
-                # Stage 3: normalized
+                # ── Stage 3: normalized ──────────────────────────────────────
                 res = resolve_via_normalized(surface, db, context_writers)
                 if res:
                     n_norm += 1
-                    resolutions[surface] = res
                 else:
-                    # Stage 4: failed
-                    n_failed += 1
-                    resolutions[surface] = Resolution(
-                        surface         = surface,
-                        method          = "failed",
-                        ol_key          = None,
-                        canonical_title = None,
-                        author_name     = None,
-                        confidence      = 0.0,
-                        notes           = "no_match",
-                    )
+                    # ── Stage 4: fuzzy pre-resolved ──────────────────────────
+                    res = resolve_via_fuzzy(surface, fuzzy_lookup, db,
+                                            context_writers)
+                    if res:
+                        n_fuzzy += 1
+                    else:
+                        # ── Stage 5: canonical lookup ────────────────────────
+                        res = resolve_via_canonical(surface, canonical_lookup,
+                                                    db, context_writers)
+                        if res:
+                            n_canonical += 1
+                        else:
+                            # ── Stage 6: failed ──────────────────────────────
+                            n_failed += 1
+                            res = Resolution(
+                                surface         = surface,
+                                method          = "failed",
+                                ol_key          = None,
+                                canonical_title = None,
+                                author_name     = None,
+                                confidence      = 0.0,
+                                notes           = "no_match",
+                            )
+
+        resolutions[surface] = res
 
         # ── Update progress ──────────────────────────────────────────────────
         if bar is not None:
             bar.update(1)
             if i % PROGRESS_INTERVAL == 0 or i == len(all_surfaces):
-                bar.set_postfix(_make_postfix(n_acronym, n_exact,
-                                              n_norm, n_failed))
+                bar.set_postfix(_make_postfix(n_acronym, n_exact, n_norm,
+                                              n_fuzzy, n_canonical, n_failed))
         elif i % PROGRESS_INTERVAL == 0 or i == len(all_surfaces):
-            elapsed  = time.perf_counter() - t_start
-            rate     = i / elapsed if elapsed > 0 else 0
+            elapsed   = time.perf_counter() - t_start
+            rate      = i / elapsed if elapsed > 0 else 0
             remaining = (len(all_surfaces) - i) / rate if rate > 0 else 0
             log.info(
                 "[%d/%d] %.0f form/s  ETA ~%.0fs  |  "
-                "acr=%d  exact=%d  norm=%d  fail=%d",
+                "acr=%d  exact=%d  norm=%d  fuzz=%d  can=%d  fail=%d",
                 i, len(all_surfaces), rate, remaining,
-                n_acronym, n_exact, n_norm, n_failed,
+                n_acronym, n_exact, n_norm, n_fuzzy, n_canonical, n_failed,
             )
 
     if bar is not None:
-        bar.set_postfix(_make_postfix(n_acronym, n_exact, n_norm, n_failed))
+        bar.set_postfix(_make_postfix(n_acronym, n_exact, n_norm,
+                                      n_fuzzy, n_canonical, n_failed))
         bar.close()
 
     elapsed = time.perf_counter() - t_start
-    total   = n_acronym + n_exact + n_norm + n_failed
+    total   = n_acronym + n_exact + n_norm + n_fuzzy + n_canonical + n_failed
 
     # ── Final summary ────────────────────────────────────────────────────────
     log.info("─" * 60)
     log.info("Resolution summary (%d unique forms in %.1fs, %.0f form/s)",
              total, elapsed, total / elapsed if elapsed > 0 else 0)
-    log.info("  acronym    %5d  (%5.1f%%)", n_acronym, 100 * n_acronym / total if total else 0)
-    log.info("  exact      %5d  (%5.1f%%)", n_exact,   100 * n_exact   / total if total else 0)
-    log.info("  normalized %5d  (%5.1f%%)", n_norm,    100 * n_norm    / total if total else 0)
-    log.info("  failed     %5d  (%5.1f%%)", n_failed,  100 * n_failed  / total if total else 0)
+    log.info("  acronym    %5d  (%5.1f%%)", n_acronym,   100 * n_acronym   / total if total else 0)
+    log.info("  exact      %5d  (%5.1f%%)", n_exact,     100 * n_exact     / total if total else 0)
+    log.info("  normalized %5d  (%5.1f%%)", n_norm,      100 * n_norm      / total if total else 0)
+    log.info("  fuzzy      %5d  (%5.1f%%)", n_fuzzy,     100 * n_fuzzy     / total if total else 0)
+    log.info("  canonical  %5d  (%5.1f%%)", n_canonical, 100 * n_canonical / total if total else 0)
+    log.info("  failed     %5d  (%5.1f%%)", n_failed,    100 * n_failed    / total if total else 0)
     log.info("─" * 60)
 
     if smoke_test:
@@ -499,10 +706,18 @@ def write_outputs(resolutions: dict[str, Resolution],
 
 def parse_args():
     p = argparse.ArgumentParser(description="Disambiguate BOOK entities via Open Library")
-    p.add_argument("--dataset",    required=True, help="Label Studio JSON export")
-    p.add_argument("--db",         required=True, help="ol.db SQLite database")
-    p.add_argument("--acronyms",   required=True, help="acronyms.json")
-    p.add_argument("--out-dir",    default="./output", help="Output directory")
+    p.add_argument("--dataset",          required=True,
+                   help="Label Studio JSON export")
+    p.add_argument("--db",               required=True,
+                   help="ol.db SQLite database")
+    p.add_argument("--acronyms",         required=True,
+                   help="acronyms.json")
+    p.add_argument("--fuzzy-resolved",   default=None,
+                   help="fuzzy_resolved.csv (stage 4; optional)")
+    p.add_argument("--canonical-lookup", default=None,
+                   help="canonical_lookup.csv (stage 5; optional)")
+    p.add_argument("--out-dir",          default="./output",
+                   help="Output directory")
     p.add_argument("--smoke-test", action="store_true",
                    help=f"Process only the first {SMOKE_TEST_LIMIT} unique surface forms "
                         "to check for errors and estimate full-run time.")
@@ -528,22 +743,34 @@ def main():
 
     db = OLDatabase(db_path)
 
+    # Load optional post-processing tables
+    fuzzy_lookup = (
+        load_fuzzy_resolved(Path(args.fuzzy_resolved))
+        if args.fuzzy_resolved else {}
+    )
+    canonical_lookup = (
+        load_canonical_lookup(Path(args.canonical_lookup))
+        if args.canonical_lookup else {}
+    )
+
     entities   = load_entities(dataset_path)
     thread_idx = build_thread_index(entities)
 
     resolutions = disambiguate_books(
         entities, thread_idx, db, acronyms,
-        smoke_test=args.smoke_test,
+        fuzzy_lookup     = fuzzy_lookup,
+        canonical_lookup = canonical_lookup,
+        smoke_test       = args.smoke_test,
     )
 
     if args.smoke_test:
         # Print a human-readable table of results instead of writing files
         log.info("Smoke-test results (not writing output files):")
-        header = f"{'SURFACE':<35}  {'METHOD':<12}  {'CONF':>5}  {'AMB':>3}  CANONICAL TITLE"
+        header = f"{'SURFACE':<35}  {'METHOD':<18}  {'CONF':>5}  {'AMB':>3}  CANONICAL TITLE"
         log.info(header)
         log.info("-" * len(header))
         for surface, r in sorted(resolutions.items()):
-            log.info("%-35s  %-12s  %5.2f  %3s  %s",
+            log.info("%-35s  %-18s  %5.2f  %3s  %s",
                      surface[:35],
                      r.method,
                      r.confidence,
@@ -554,7 +781,6 @@ def main():
 
     db.close()
     log.info("Done.")
-
 
 
 if __name__ == "__main__":

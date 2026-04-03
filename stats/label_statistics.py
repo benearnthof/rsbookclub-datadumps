@@ -18,7 +18,7 @@ from collections import Counter, defaultdict
 from label_studio_sdk import LabelStudio  # type: ignore
 
 API_URL    = "http://localhost:8080"
-API_KEY    = ""
+API_KEY    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6ODA4MTgwMzIxMCwiaWF0IjoxNzc0NjAzMjEwLCJqdGkiOiJjYzMxYmJiMmQ2NmE0NjA0YjljMDMxOTFkODBjODlmZCIsInVzZXJfaWQiOiIxIn0.MhEGA4uVO1zA3HSbkiEoZISVkBiOL4FfNu8GKElik2A"
 PROJECT_ID = "8"
 PAGE_SIZE  = 1000
 

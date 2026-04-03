@@ -1,1 +1,1 @@
-rerun entity linking with finished lookup table
+Visualize top 250 in nice diagrams
